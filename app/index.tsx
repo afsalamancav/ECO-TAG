@@ -94,7 +94,7 @@ export default function Inicio() {
           </View>
           <View style={styles.textoWrapper}>
             <Text style={styles.textoBoton}>Personal Hotel</Text>
-            <Text style={styles.textoSubBoton}>Asignación de prendas y escaneo QR</Text>
+            <Text style={styles.textoSubBoton}>Asignación de prendas y escaneo QR/NFC</Text>
           </View>
           <Text style={styles.flecha}>→</Text>
         </TouchableOpacity>

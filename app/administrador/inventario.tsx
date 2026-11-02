@@ -1,34 +1,61 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, TextInput } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, TextInput, ActivityIndicator, FlatList } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy'; 
 import * as XLSX from 'xlsx';
-
-// Inventario inicial con Stock Mínimo
-const INITIAL_INVENTARIO = [
-  { id: '1', tipo: 'Sábana King', cantidad: 420, stockMinimo: 100, icono: '🛏️' },
-  { id: '2', tipo: 'Sábana Queen', cantidad: 350, stockMinimo: 100, icono: '🛏️' },
-  { id: '3', tipo: 'Toalla de baño', cantidad: 50, stockMinimo: 80, icono: '🧻' }, // Alerta (50 < 80)
-  { id: '4', tipo: 'Funda de almohada', cantidad: 150, stockMinimo: 50, icono: '🛌' },
-  { id: '5', tipo: 'Bata de baño', cantidad: 10, stockMinimo: 20, icono: '🥼' }, // Alerta (10 < 20)
-];
+import { supabase } from '../../conexion/supabase';
 
 export default function Inventario() {
   const router = useRouter();
   
   // Estados principales
-  const [inventario, setInventario] = useState(INITIAL_INVENTARIO);
-  
-  // Estados para el Modal de Configuración de Stock
+  const [inventario, setInventario] = useState<any[]>([]);
+  const [cargando, setCargando] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Estados para configuración de Stock (Modal)
   const [modalStockVisible, setModalStockVisible] = useState(false);
   const [itemEditando, setItemEditando] = useState<any>(null);
   const [nuevoStockStr, setNuevoStockStr] = useState('');
 
+  // --- 1. CARGAR INVENTARIO DESDE SUPABASE ---
+  useEffect(() => {
+    cargarInventario();
+  }, []);
+
+  const cargarInventario = async () => {
+    setCargando(true);
+    // Traemos todos los artículos de la base de datos
+    const { data, error } = await supabase.from('articulos').select('*');
+    
+    if (error) {
+      Alert.alert("Error", error.message);
+    } else if (data) {
+      // Como en Supabase cada fila es UNA prenda, agrupamos por tipo_prenda para el conteo
+      const agrupado = data.reduce((acc: any, item: any) => {
+        const tipo = item.tipo_prenda || 'Sin tipo';
+        if (!acc[tipo]) {
+          acc[tipo] = { 
+            tipo, 
+            cantidad: 0, 
+            stockMinimo: 10, // Valor por defecto
+            icono: tipo.includes('Sábana') ? '🛏️' : tipo.includes('Toalla') ? '🧻' : '👕'
+          };
+        }
+        acc[tipo].cantidad += 1;
+        return acc;
+      }, {});
+
+      setInventario(Object.values(agrupado));
+    }
+    setCargando(false);
+  };
+
   const totalPrendas = inventario.reduce((acc, item) => acc + item.cantidad, 0);
 
-  // --- LÓGICA DE STOCK ---
+  // --- 2. CONFIGURAR STOCK MÍNIMO ---
   const abrirConfiguracionStock = (item: any) => {
     setItemEditando(item);
     setNuevoStockStr(item.stockMinimo.toString());
@@ -38,17 +65,20 @@ export default function Inventario() {
   const guardarStockMinimo = () => {
     const valor = parseInt(nuevoStockStr);
     if (isNaN(valor) || valor < 0) {
-      Alert.alert("Error", "Por favor ingresa un número válido.");
+      Alert.alert("Error", "Ingresa un número válido.");
       return;
     }
     
+    // Actualizamos el estado local
     setInventario(inventario.map(item => 
-      item.id === itemEditando.id ? { ...item, stockMinimo: valor } : item
+      item.tipo === itemEditando.tipo ? { ...item, stockMinimo: valor } : item
     ));
     setModalStockVisible(false);
+    Alert.alert("Guardado", "Stock mínimo actualizado para el reporte.");
+    // Nota: Para guardar esto en la nube, se necesitaría una tabla extra de "configuraciones".
   };
 
-  // --- EXPORTACIONES ---
+  // --- 3. EXPORTACIONES ---
   const generarPDF = async () => {
     try {
       const html = `
@@ -71,7 +101,7 @@ export default function Inventario() {
               <h1 class="logo">🌿 ECO-TAG</h1>
               <p class="subtitle">Reporte generado el: ${new Date().toLocaleDateString('es-CO')}</p>
             </div>
-            <h2>Inventario General</h2>
+            <h2>Inventario Actual</h2>
             <table>
               <tr><th>Tipo de Prenda</th><th>Cantidad</th><th>Stock Mínimo</th></tr>
               ${inventario.map(item => `<tr><td>${item.tipo}</td><td>${item.cantidad}</td><td>${item.stockMinimo}</td></tr>`).join('')}
@@ -112,8 +142,12 @@ export default function Inventario() {
     }
   };
 
+  const inventarioFiltrado = inventario.filter(item => 
+    item.tipo.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <View style={styles.container}>
       
       {/* MODAL CONFIGURAR STOCK MÍNIMO */}
       <Modal visible={modalStockVisible} transparent={true} animationType="fade">
@@ -121,14 +155,13 @@ export default function Inventario() {
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Stock Mínimo</Text>
             <Text style={styles.modalSub}>Configura el límite para recibir alertas de {itemEditando?.tipo}.</Text>
-            
             <TextInput 
               style={styles.modalInput} 
               keyboardType="numeric" 
               value={nuevoStockStr} 
               onChangeText={setNuevoStockStr} 
+              placeholderTextColor="#999"
             />
-            
             <View style={styles.modalButtons}>
               <TouchableOpacity style={styles.cancelButton} onPress={() => setModalStockVisible(false)}>
                 <Text style={styles.cancelText}>Cancelar</Text>
@@ -141,46 +174,67 @@ export default function Inventario() {
         </View>
       </Modal>
 
-      <TouchableOpacity onPress={() => router.push('/administrador/dashboard')} style={styles.backButton}>
-        <Text style={styles.backText}>← Volver al Panel</Text>
-      </TouchableOpacity>
+      {/* INTERFAZ PRINCIPAL */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => router.push('/administrador/dashboard')} style={styles.backButton}>
+          <Text style={styles.backText}>← Volver al Panel</Text>
+        </TouchableOpacity>
+        <Text style={styles.titulo}>Inventario</Text>
 
-      <Text style={styles.titulo}>Inventario Total</Text>
-      
-      <View style={styles.totalCard}>
-        <Text style={styles.totalLabel}>Prendas en Total</Text>
-        <Text style={styles.totalValue}>{totalPrendas.toLocaleString()}</Text>
+        <View style={styles.totalCard}>
+          <Text style={styles.totalLabel}>Prendas en Total</Text>
+          <Text style={styles.totalValue}>{totalPrendas.toLocaleString()}</Text>
+        </View>
+
+        <View style={styles.searchContainer}>
+          <Text style={styles.searchIcon}>🔍</Text>
+          <TextInput 
+            style={styles.searchInput} 
+            placeholder="Buscar tipo de prenda..." 
+            placeholderTextColor="#999" 
+            value={searchQuery} 
+            onChangeText={setSearchQuery} 
+          />
+        </View>
       </View>
 
-      <Text style={styles.sectionTitle}>Desglose por Categoría</Text>
-
-      <View style={styles.categoryContainer}>
-        {inventario.map((item) => {
-          const stockBajo = item.cantidad <= item.stockMinimo;
-          
-          return (
-            <View key={item.id} style={[styles.categoryItem, stockBajo && styles.categoryItemAlert]}>
-              <View style={styles.categoryLeft}>
-                <Text style={styles.categoryIcon}>{item.icono}</Text>
-                <View>
-                  <Text style={styles.categoryName}>{item.tipo}</Text>
-                  <TouchableOpacity style={styles.configStockRow} onPress={() => abrirConfiguracionStock(item)}>
-                    <Text style={styles.configStockText}>Mínimo: {item.stockMinimo} (Cambiar ⚙️)</Text>
-                  </TouchableOpacity>
+      {cargando ? (
+        <ActivityIndicator size="large" color="#1B4D21" style={{ marginTop: 30 }} />
+      ) : (
+        <FlatList
+          data={inventarioFiltrado}
+          keyExtractor={(item) => item.tipo}
+          contentContainerStyle={styles.listContent}
+          renderItem={({ item }) => {
+            const stockBajo = item.cantidad <= item.stockMinimo;
+            return (
+              <View style={[styles.categoryItem, stockBajo && styles.categoryItemAlert]}>
+                <View style={styles.categoryLeft}>
+                  <Text style={styles.categoryIcon}>{item.icono}</Text>
+                  <View>
+                    <Text style={styles.categoryName}>{item.tipo}</Text>
+                    <TouchableOpacity style={styles.configStockRow} onPress={() => abrirConfiguracionStock(item)}>
+                      <Text style={styles.configStockText}>Mínimo: {item.stockMinimo} (Cambiar ⚙️)</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                
+                <View style={styles.categoryRight}>
+                  <View style={styles.countRow}>
+                    <Text style={[styles.categoryCount, stockBajo && styles.textAlert]}>{item.cantidad}</Text>
+                    {stockBajo && <Text style={styles.alertIcon}>⚠️</Text>}
+                  </View>
                 </View>
               </View>
-              
-              <View style={styles.categoryRight}>
-                <View style={styles.countRow}>
-                  <Text style={[styles.categoryCount, stockBajo && styles.textAlert]}>{item.cantidad}</Text>
-                  {stockBajo && <Text style={styles.alertIcon}>⚠️</Text>}
-                </View>
-              </View>
-            </View>
-          );
-        })}
-      </View>
+            );
+          }}
+          ListEmptyComponent={
+            <Text style={styles.emptyText}>No hay prendas en el inventario.</Text>
+          }
+        />
+      )}
 
+      {/* BOTONES DE EXPORTACIÓN */}
       <View style={styles.exportButtonsRow}>
         <TouchableOpacity style={[styles.exportButton, { backgroundColor: '#FFEBEE' }]} onPress={generarPDF}>
           <Text style={[styles.exportText, { color: '#D32F2F' }]}>📄 Exportar PDF</Text>
@@ -191,51 +245,49 @@ export default function Inventario() {
         </TouchableOpacity>
       </View>
 
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F7F9F7' },
-  content: { padding: 20, paddingTop: 40, paddingBottom: 40 },
+  header: { padding: 20, paddingTop: 40 },
   backButton: { marginBottom: 15 },
   backText: { color: '#2E7D32', fontWeight: 'bold', fontSize: 16 },
-  titulo: { fontSize: 28, fontWeight: '900', color: '#1B4D21', marginBottom: 5 },
-  
-  // Tarjeta Total
-  totalCard: { backgroundColor: '#2E7D32', padding: 25, borderRadius: 16, marginBottom: 25, alignItems: 'center', shadowColor: '#2E7D32', shadowOpacity: 0.3, elevation: 5 },
+  titulo: { fontSize: 28, fontWeight: '900', color: '#1B4D21', marginBottom: 20 },
+
+  totalCard: { backgroundColor: '#2E7D32', padding: 25, borderRadius: 16, marginBottom: 20, alignItems: 'center', shadowColor: '#2E7D32', shadowOpacity: 0.3, elevation: 5 },
   totalLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 14, fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: 1 },
   totalValue: { color: '#FFF', fontSize: 48, fontWeight: '900', marginTop: 5 },
 
-  sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 15 },
-  categoryContainer: { backgroundColor: '#FFF', borderRadius: 12, padding: 15, marginBottom: 20, shadowColor: '#000', shadowOpacity: 0.05, elevation: 2 },
-  
-  // Fila de Categoría
-  categoryItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
-  categoryItemAlert: { backgroundColor: '#FFF8E1', borderRadius: 8, borderBottomWidth: 0, marginVertical: 5, paddingHorizontal: 10 },
+  searchContainer: { flexDirection: 'row', backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 10, paddingHorizontal: 15, alignItems: 'center', marginBottom: 15 },
+  searchIcon: { fontSize: 18, marginRight: 10 },
+  searchInput: { flex: 1, paddingVertical: 12, fontSize: 16, color: '#333' },
+
+  listContent: { paddingHorizontal: 20, paddingBottom: 120 },
+  categoryItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 15, backgroundColor: '#FFF', borderRadius: 12, marginBottom: 10, paddingHorizontal: 15, elevation: 1, borderWidth: 1, borderColor: '#EEE' },
+  categoryItemAlert: { backgroundColor: '#FFF8E1', borderColor: '#FFECB3' },
   
   categoryLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   categoryIcon: { fontSize: 24, marginRight: 15 },
-  categoryName: { fontSize: 16, color: '#333', fontWeight: '500' },
-  
-  // Texto sutil para cambiar el mínimo
+  categoryName: { fontSize: 16, color: '#333', fontWeight: 'bold' },
   configStockRow: { marginTop: 4 },
   configStockText: { fontSize: 12, color: '#999', fontStyle: 'italic' },
   
   categoryRight: { alignItems: 'flex-end' },
   countRow: { flexDirection: 'row', alignItems: 'center' },
-  categoryCount: { fontSize: 20, fontWeight: 'bold', color: '#1B4D21' },
+  categoryCount: { fontSize: 22, fontWeight: 'bold', color: '#1B4D21' },
   textAlert: { color: '#D32F2F' },
-  alertIcon: { fontSize: 16, marginLeft: 5 },
+  alertIcon: { fontSize: 18, marginLeft: 5 },
 
-  // Exportación
-  exportButtonsRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
+  exportButtonsRow: { position: 'absolute', bottom: 20, left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between' },
   exportButton: { flex: 1, padding: 18, borderRadius: 12, alignItems: 'center', marginHorizontal: 5, borderWidth: 1, borderColor: '#E0E0E0' },
   exportText: { fontWeight: 'bold', fontSize: 15 },
 
-  // Modal
+  emptyText: { textAlign: 'center', color: '#999', fontSize: 16, marginTop: 30 },
+  
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  modalBox: { backgroundColor: '#FFF', width: '80%', padding: 25, borderRadius: 16, elevation: 5 },
+  modalBox: { backgroundColor: '#FFF', width: '85%', padding: 25, borderRadius: 16, elevation: 5 },
   modalTitle: { fontSize: 22, fontWeight: 'bold', color: '#333', marginBottom: 5, textAlign: 'center' },
   modalSub: { fontSize: 14, color: '#666', marginBottom: 20, textAlign: 'center' },
   modalInput: { backgroundColor: '#F5F5F5', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 10, padding: 15, fontSize: 20, fontWeight: 'bold', textAlign: 'center', marginBottom: 25 },

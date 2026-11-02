@@ -13,6 +13,9 @@ export default function RootLayout() {
       <Stack.Screen name="administrador/alertas" options={{ title: 'Gestión de Alertas' }} />
       <Stack.Screen name="administrador/inventario" options={{ title: 'Inventario Total' }} />
       <Stack.Screen name="administrador/detalle-alerta" options={{ title: 'Detalle de Alerta' }} />
+      
+      {/* RUTA NUEVA AGREGADA */}
+      <Stack.Screen name="administrador/historial" options={{ title: 'Historial y Trazabilidad' }} />
 
       {/* RUTAS DE HOTEL Y LAVANDERÍA */}
       <Stack.Screen name="hotel/index" options={{ title: 'Personal Hotel' }} />

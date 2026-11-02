@@ -1,109 +1,185 @@
-import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert, Modal, FlatList } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert, Modal, FlatList, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-
-const TIPOS_PRENDA = ['Sábana Queen', 'Sábana King', 'Funda de almohada', 'Toalla de baño', 'Toalla de manos', 'Almohada', 'Bata de baño'];
-const COMPOSICIONES = ['100% Algodón', '50% Algodón / 50% Poliéster', '100% Poliéster', '60% Algodón / 40% Tencel', '100% Microfibra'];
-
-const INITIAL_PRENDAS = [
-  { id: 'NFC-001', tipo: 'Sábana Queen', comp: '100% Algodón', estado: 'En Almacén' },
-  { id: 'NFC-002', tipo: 'Toalla de baño', comp: '100% Microfibra', estado: 'En Almacén' },
-  { id: 'NFC-003', tipo: 'Sábana King', comp: '50% Algodón / 50% Poliéster', estado: 'En Habitación 305' },
-  { id: 'NFC-004', tipo: 'Funda de almohada', comp: '100% Algodón', estado: 'En Lavandería' },
-];
+import { useState, useEffect } from 'react';
+import { supabase } from '../../conexion/supabase';
+import NfcManager, { NfcTech } from 'react-native-nfc-manager';
 
 export default function Registro() {
   const router = useRouter();
   
   const [activeTab, setActiveTab] = useState<'registrar' | 'gestionar'>('registrar');
+  const [tiposPrenda, setTiposPrenda] = useState<any[]>([]);
+  const [composiciones, setComposiciones] = useState<any[]>([]);
+  const [prendas, setPrendas] = useState<any[]>([]);
+  const [cargando, setCargando] = useState(true);
 
+  // Formulario
   const [tipo, setTipo] = useState('');
   const [composicion, setComposicion] = useState('');
   const [codigoNFC, setCodigoNFC] = useState('');
   const [modalVisible, setModalVisible] = useState<'tipo' | 'composicion' | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-
-  const [prendas, setPrendas] = useState(INITIAL_PRENDAS);
   const [searchPrenda, setSearchPrenda] = useState('');
-  const [prendaAEliminar, setPrendaAEliminar] = useState<any>(null);
 
-  const guardarPrenda = () => {
-    if (!tipo || !composicion || !codigoNFC) {
-      Alert.alert("Error", "Por favor completa todos los campos obligatorios.");
-      return;
-    }
-    const nueva = { id: codigoNFC.toUpperCase(), tipo, comp: composicion, estado: 'En Almacén' };
-    setPrendas([nueva, ...prendas]);
-    Alert.alert("¡Éxito!", `Prenda registrada en el inventario:\n${tipo}`);
-    setTipo(''); setComposicion(''); setCodigoNFC('');
-    setActiveTab('gestionar');
+  // Estados para el NFC y Escaneo
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanContext, setScanContext] = useState<'registrar' | 'borrar' | 'copiar' | null>(null);
+
+  // Editar
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editTipo, setEditTipo] = useState('');
+  const [editCodigo, setEditCodigo] = useState('');
+  const [editModalSelectVisible, setEditModalSelectVisible] = useState(false);
+
+  useEffect(() => {
+    NfcManager.start();
+    cargarCatalogos();
+    cargarPrendas();
+    return () => { NfcManager.cancelTechnologyRequest().catch(() => 0); };
+  }, []);
+
+  const cargarCatalogos = async () => {
+    const { data: dataTipos } = await supabase.from('tipos_prenda').select('*').order('nombre');
+    const { data: dataComps } = await supabase.from('tipos_tela').select('*').order('nombre');
+    if (dataTipos) setTiposPrenda(dataTipos);
+    if (dataComps) setComposiciones(dataComps);
   };
 
-  const simularEscaneoBaja = () => {
-    Alert.alert(
-      "📡 Leyendo NFC...",
-      "Acerca el dispositivo a la etiqueta de la prenda que deseas dar de baja.",
-      [{ text: "Simular Lectura (Buscar NFC-003)", onPress: () => {
-        const prendaEncontrada = prendas.find(p => p.id === 'NFC-003');
-        if (prendaEncontrada) {
-          if (prendaEncontrada.estado !== 'En Almacén') {
-            Alert.alert("Acción Denegada", `La prenda ${prendaEncontrada.id} no se puede dar de baja porque actualmente está "${prendaEncontrada.estado}". Solo se pueden eliminar prendas que estén en el almacén.`);
-          } else {
-            setPrendaAEliminar(prendaEncontrada);
-          }
+  const cargarPrendas = async () => {
+    setCargando(true);
+    const { data } = await supabase.from('articulos').select('*').eq('estado', 'Disponible').order('created_at', { ascending: false });
+    setPrendas(data || []);
+    setCargando(false);
+  };
+
+  // --- LÓGICA DE ESCANEO ---
+  const iniciarEscaneo = async (contexto: 'registrar' | 'borrar' | 'copiar') => {
+    setScanContext(contexto);
+    setIsScanning(true);
+    setCodigoNFC(''); 
+
+    try {
+      await NfcManager.requestTechnology(NfcTech.Ndef);
+      const tag = await NfcManager.getTag();
+      
+      if (tag && tag.id) {
+        const idEscaneado = tag.id.toUpperCase();
+        
+        if (contexto === 'registrar') {
+          setCodigoNFC(idEscaneado);
+          Alert.alert("✅ NFC Leído", `Código capturado: ${idEscaneado}`);
+        } else if (contexto === 'borrar') {
+          const existe = prendas.find(p => p.nfc_uid === idEscaneado);
+          if (existe) pedirConfirmacionBaja(existe);
+          else Alert.alert("No encontrado", "Este chip no está registrado en la base de datos.");
+        } else if (contexto === 'copiar') {
+          // CAMBIO: En lugar de usar Clipboard, mostramos una alerta con el ID formateado para copiar manual.
+          Alert.alert(
+            "📋 ID del Chip",
+            `El ID de este chip es:\n\n${idEscaneado}\n\n(Puedes mantener presionado para copiarlo)`,
+            [{ text: "Cerrar" }]
+          );
         }
-      }}, 
-      { text: "Simular Lectura (Buscar NFC-001)", onPress: () => {
-        const prendaEncontrada = prendas.find(p => p.id === 'NFC-001');
-        if (prendaEncontrada) setPrendaAEliminar(prendaEncontrada);
-      }},
-      { text: "Cancelar", style: "cancel" }]
+      }
+    } catch (ex) {
+      console.log("Error NFC:", ex);
+    } finally {
+      NfcManager.cancelTechnologyRequest().catch(() => 0);
+      setIsScanning(false);
+    }
+  };
+
+  // --- GUARDAR PRENDA ---
+  const guardarPrenda = async () => {
+    if (!tipo || !composicion || !codigoNFC) {
+      Alert.alert("Error", "Completa todos los campos.");
+      return;
+    }
+
+    const compSeleccionada = composiciones.find(c => c.nombre === composicion);
+
+    const { error } = await supabase.from('articulos').insert([
+      { 
+        nfc_uid: codigoNFC.toUpperCase(), 
+        tipo_prenda: tipo, 
+        id_tipo_tela: compSeleccionada ? compSeleccionada.id : null,
+        estado: 'Disponible',
+        lavados_totales: 0
+      }
+    ]);
+
+    if (error) Alert.alert("Error al guardar", error.message);
+    else {
+      Alert.alert("¡Éxito!", `Prenda registrada:\n${tipo}`);
+      setTipo(''); setComposicion(''); setCodigoNFC('');
+      cargarPrendas();
+      setActiveTab('gestionar');
+    }
+  };
+
+  // --- EDITAR PRENDA ---
+  const abrirEdicion = (prenda: any) => {
+    setEditId(prenda.id);
+    setEditTipo(prenda.tipo_prenda);
+    setEditCodigo(prenda.nfc_uid);
+    setEditModalVisible(true);
+  };
+
+  const guardarEdicion = async () => {
+    if (!editId) return;
+    const { error } = await supabase
+      .from('articulos')
+      .update({ tipo_prenda: editTipo, nfc_uid: editCodigo })
+      .eq('id', editId);
+
+    if (error) Alert.alert("Error", error.message);
+    else {
+      setEditModalVisible(false);
+      cargarPrendas();
+    }
+  };
+
+  // --- BORRAR ---
+  const pedirConfirmacionBaja = (prenda: any) => {
+    Alert.alert(
+      "Dar de baja",
+      `¿Estás seguro de eliminar ${prenda.tipo_prenda} (${prenda.nfc_uid})?`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        { text: "Eliminar", style: "destructive", onPress: async () => {
+          const { error } = await supabase.from('articulos').delete().eq('id', prenda.id);
+          if (error) Alert.alert("Error", "No se puede borrar.");
+          else { cargarPrendas(); Alert.alert("Eliminada", "Prenda borrada del sistema."); }
+        }}
+      ]
     );
   };
 
-  const confirmarBaja = () => {
-    if (!prendaAEliminar) return;
-    setPrendas(prendas.filter(p => p.id !== prendaAEliminar.id));
-    setPrendaAEliminar(null);
-    Alert.alert("Prenda dada de baja", "El textil ha sido eliminado del inventario.");
-  };
-
-  const renderModal = () => {
-    let data: string[] = [];
+  const renderModalSelect = () => {
+    let data: any[] = [];
     let title = '';
     let setter: (val: string) => void = () => {};
 
-    if (modalVisible === 'tipo') { data = TIPOS_PRENDA; title = 'Tipo de Prenda'; setter = setTipo; }
-    if (modalVisible === 'composicion') { data = COMPOSICIONES; title = 'Composición'; setter = setComposicion; }
+    if (modalVisible === 'tipo') { data = tiposPrenda; title = 'Tipo de Prenda'; setter = setTipo; }
+    if (modalVisible === 'composicion') { data = composiciones; title = 'Composición'; setter = setComposicion; }
 
-    const dataFiltrada = data.filter(item => item.toLowerCase().includes(searchQuery.toLowerCase()));
+    const dataFiltrada = data.filter(item => item.nombre.toLowerCase().includes(searchQuery.toLowerCase()));
 
     return (
       <Modal visible={modalVisible !== null} animationType="slide" transparent={true}>
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Seleccionar {title}</Text>
-            
-            <View style={styles.modalSearchContainer}>
-              <Text style={styles.modalSearchIcon}>🔍</Text>
-              {/* AQUÍ QUITAMOS EL autoFocus */}
-              <TextInput 
-                style={styles.modalSearchInput} 
-                placeholder="Escribe para filtrar..." 
-                value={searchQuery} 
-                onChangeText={setSearchQuery} 
-              />
-            </View>
-            
+            <TextInput style={styles.modalSearchInput} placeholder="Buscar..." placeholderTextColor="#999" value={searchQuery} onChangeText={setSearchQuery} />
             <FlatList
               data={dataFiltrada}
-              keyExtractor={(item) => item}
+              keyExtractor={(item) => item.id}
               renderItem={({ item }) => (
-                <TouchableOpacity style={styles.modalItem} onPress={() => { setter(item); setModalVisible(null); setSearchQuery(''); }}>
-                  <Text style={styles.modalItemText}>{item}</Text>
+                <TouchableOpacity style={styles.modalItem} onPress={() => { setter(item.nombre); setModalVisible(null); setSearchQuery(''); }}>
+                  <Text style={styles.modalItemText}>{item.nombre}</Text>
                 </TouchableOpacity>
               )}
-              ListEmptyComponent={<Text style={styles.emptyText}>No se encontraron resultados.</Text>}
             />
             <TouchableOpacity style={styles.modalClose} onPress={() => { setModalVisible(null); setSearchQuery(''); }}>
               <Text style={styles.modalCloseText}>Cancelar</Text>
@@ -114,18 +190,81 @@ export default function Registro() {
     );
   };
 
-  const prendasEnAlmacen = prendas.filter(p => 
-    p.estado === 'En Almacén' && 
-    (p.id.toLowerCase().includes(searchPrenda.toLowerCase()) || p.tipo.toLowerCase().includes(searchPrenda.toLowerCase()))
+  // Filtro para buscar por nombre o por ID de NFC
+  const prendasFiltradas = prendas.filter(p => 
+    p.nfc_uid.toLowerCase().includes(searchPrenda.toLowerCase()) || 
+    p.tipo_prenda.toLowerCase().includes(searchPrenda.toLowerCase())
   );
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {renderModal()}
+      {renderModalSelect()}
+
+      {/* PANTALLA DE ESCANEANDO */}
+      <Modal visible={isScanning} transparent={true} animationType="fade">
+        <View style={styles.scanningOverlay}>
+          <View style={styles.scanningBox}>
+            <ActivityIndicator size="large" color="#1B4D21" />
+            <Text style={styles.scanningTitle}>Escaneando Chip NFC...</Text>
+            <Text style={styles.scanningText}>
+              1. Retira la funda del celular.{"\n"}
+              2. Acerca el chip a la parte trasera (centro superior).{"\n"}
+              3. Mantenlo pegado hasta que vibre.
+            </Text>
+            <TouchableOpacity style={styles.cancelScanBtn} onPress={() => { NfcManager.cancelTechnologyRequest(); setIsScanning(false); }}>
+              <Text style={styles.cancelScanText}>Cancelar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL EDITAR PRENDA */}
+      <Modal visible={editModalVisible} transparent={true} animationType="fade">
+        <View style={styles.modalContainerCenter}>
+          <View style={styles.editBox}>
+            <Text style={styles.modalTitle}>Editar Prenda</Text>
+            
+            <Text style={styles.label}>NFC UID</Text>
+            <TextInput style={styles.inputBlock} value={editCodigo} onChangeText={setEditCodigo} editable={false} />
+
+            <Text style={styles.label}>Tipo de Prenda</Text>
+            <TouchableOpacity style={styles.selectInput} onPress={() => setEditModalSelectVisible(true)}>
+              <Text style={styles.selectText}>{editTipo}</Text>
+              <Text style={styles.arrow}>▼</Text>
+            </TouchableOpacity>
+
+            <View style={styles.guideButtonsRow}>
+              <TouchableOpacity style={styles.guideCancelBtn} onPress={() => setEditModalVisible(false)}><Text style={styles.guideCancelText}>Cancelar</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.guideActionBtn} onPress={guardarEdicion}><Text style={styles.guideActionText}>Guardar</Text></TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* SUB-MODAL PARA ELEGIR TIPO DE PRENDA EN EDITAR */}
+      <Modal visible={editModalSelectVisible} transparent={true} animationType="slide">
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Seleccionar Tipo</Text>
+            <FlatList
+              data={tiposPrenda}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => (
+                <TouchableOpacity style={styles.modalItem} onPress={() => { setEditTipo(item.nombre); setEditModalSelectVisible(false); }}>
+                  <Text style={styles.modalItemText}>{item.nombre}</Text>
+                </TouchableOpacity>
+              )}
+            />
+            <TouchableOpacity style={styles.modalClose} onPress={() => setEditModalSelectVisible(false)}>
+              <Text style={styles.modalCloseText}>Cancelar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       <View style={styles.headerRow}>
         <TouchableOpacity onPress={() => router.push('/administrador/dashboard')} style={styles.backButton}>
-          <Text style={styles.backText}>← Volver al Panel</Text>
+          <Text style={styles.backText}>← Volver</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => router.push('/administrador/textiles')}>
           <Text style={styles.linkText}>⚙️ Catálogo</Text>
@@ -136,10 +275,10 @@ export default function Registro() {
 
       <View style={styles.tabContainer}>
         <TouchableOpacity style={[styles.tab, activeTab === 'registrar' && styles.tabActive]} onPress={() => setActiveTab('registrar')}>
-          <Text style={[styles.tabText, activeTab === 'registrar' && styles.tabTextActive]}>Registrar Nuevo</Text>
+          <Text style={[styles.tabText, activeTab === 'registrar' && styles.tabTextActive]}>Registrar</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.tab, activeTab === 'gestionar' && styles.tabActive]} onPress={() => setActiveTab('gestionar')}>
-          <Text style={[styles.tabText, activeTab === 'gestionar' && styles.tabTextActive]}>Dar de Baja</Text>
+          <Text style={[styles.tabText, activeTab === 'gestionar' && styles.tabTextActive]}>Gestionar</Text>
         </TouchableOpacity>
       </View>
 
@@ -148,7 +287,7 @@ export default function Registro() {
           <View style={styles.formGroup}>
             <Text style={styles.label}>Tipo de Prenda *</Text>
             <TouchableOpacity style={styles.selectInput} onPress={() => setModalVisible('tipo')}>
-              <Text style={tipo ? styles.selectText : styles.selectPlaceholder}>{tipo || 'Selecciona una opción...'}</Text>
+              <Text style={tipo ? styles.selectText : styles.selectPlaceholder}>{tipo || 'Seleccionar...'}</Text>
               <Text style={styles.arrow}>▼</Text>
             </TouchableOpacity>
           </View>
@@ -156,156 +295,127 @@ export default function Registro() {
           <View style={styles.formGroup}>
             <Text style={styles.label}>Composición *</Text>
             <TouchableOpacity style={styles.selectInput} onPress={() => setModalVisible('composicion')}>
-              <Text style={composicion ? styles.selectText : styles.selectPlaceholder}>{composicion || 'Selecciona una opción...'}</Text>
+              <Text style={composicion ? styles.selectText : styles.selectPlaceholder}>{composicion || 'Seleccionar...'}</Text>
               <Text style={styles.arrow}>▼</Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.formGroup}>
-            <Text style={styles.label}>Código NFC Único *</Text>
-            <View style={styles.nfcRow}>
-              <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} placeholder="Ej: 04:A2:3F:11" value={codigoNFC} onChangeText={setCodigoNFC} />
-              <TouchableOpacity style={styles.nfcButton} onPress={() => Alert.alert("Simulación", "Lector NFC activo.")}>
-                <Text style={styles.nfcButtonText}>📡 Leer</Text>
-              </TouchableOpacity>
-            </View>
+            <Text style={styles.label}>Código NFC *</Text>
+            <TextInput style={styles.inputBlock} placeholder="El ID aparecerá aquí" placeholderTextColor="#999" value={codigoNFC} editable={false} />
+            
+            <TouchableOpacity style={styles.btnScanFull} onPress={() => iniciarEscaneo('registrar')}>
+              <Text style={styles.btnScanFullText}>📡 Escanear Chip NFC</Text>
+            </TouchableOpacity>
           </View>
 
           <TouchableOpacity style={styles.botonGuardar} onPress={guardarPrenda}>
-            <Text style={styles.textoBoton}>Guardar en Almacén</Text>
+            <Text style={styles.textoBoton}>Guardar en Nube</Text>
           </TouchableOpacity>
         </View>
       )}
 
       {activeTab === 'gestionar' && (
         <View>
-          <TouchableOpacity style={styles.scanBajaButton} onPress={simularEscaneoBaja}>
-            <Text style={styles.scanBajaText}>📡 Escanear NFC para dar de baja</Text>
+          {/* BOTÓN PARA IDENTIFICAR Y MOSTRAR ID */}
+          <TouchableOpacity style={styles.btnScanCopy} onPress={() => iniciarEscaneo('copiar')}>
+            <Text style={styles.btnScanFullText}>📡 Identificar ID de Chip</Text>
           </TouchableOpacity>
 
-          <View style={styles.searchContainer}>
-            <Text style={styles.searchIcon}>🔍</Text>
-            <TextInput style={styles.searchInput} placeholder="Buscar en almacén..." value={searchPrenda} onChangeText={setSearchPrenda} />
-          </View>
+          <TouchableOpacity style={styles.btnScanFullDanger} onPress={() => iniciarEscaneo('borrar')}>
+            <Text style={styles.btnScanFullText}>📡 Escanear Chip para Eliminar</Text>
+          </TouchableOpacity>
 
-          <Text style={styles.infoText}>Mostrando solo prendas disponibles en el almacén ({prendasEnAlmacen.length}).</Text>
+          <TextInput 
+            style={styles.inputBlock} 
+            placeholder="Buscar por nombre o NFC UID..." 
+            placeholderTextColor="#999" 
+            value={searchPrenda} 
+            onChangeText={setSearchPrenda} 
+          />
 
-          {prendasEnAlmacen.length === 0 ? (
-             <View style={styles.emptyState}>
-               <Text style={styles.emptyIcon}>📦</Text>
-               <Text style={styles.emptyText}>No hay prendas en el almacén que coincidan con la búsqueda.</Text>
-             </View>
-          ) : (
-            prendasEnAlmacen.map((prenda) => (
-              <View key={prenda.id} style={styles.prendaCard}>
-                <View style={styles.prendaHeader}>
-                  <Text style={styles.prendaId}>{prenda.id}</Text>
-                  <View style={styles.estadoBadge}>
-                    <Text style={styles.estadoText}>{prenda.estado}</Text>
-                  </View>
-                </View>
-                <Text style={styles.prendaNombre}>{prenda.tipo}</Text>
-                <Text style={styles.prendaComp}>🧵 {prenda.comp}</Text>
-                
-                <TouchableOpacity style={styles.deleteBtn} onPress={() => setPrendaAEliminar(prenda)}>
-                  <Text style={styles.deleteBtnText}>🗑️ Dar de baja prenda</Text>
+          {prendasFiltradas.map((prenda) => (
+            <View key={prenda.id} style={styles.prendaCard}>
+              <Text style={styles.prendaId}>{prenda.nfc_uid}</Text>
+              <Text style={styles.prendaNombre}>{prenda.tipo_prenda}</Text>
+              <View style={styles.cardActions}>
+                <TouchableOpacity onPress={() => abrirEdicion(prenda)} style={styles.actionBtn}>
+                  <Text style={styles.actionBtnText}>✏️ Editar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => pedirConfirmacionBaja(prenda)} style={styles.actionBtn}>
+                  <Text style={[styles.actionBtnText, {color: '#D32F2F'}]}>🗑️ Borrar</Text>
                 </TouchableOpacity>
               </View>
-            ))
-          )}
+            </View>
+          ))}
         </View>
       )}
-
-      <Modal visible={prendaAEliminar !== null} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.deleteModalBox}>
-            <Text style={styles.deleteIcon}>⚠️</Text>
-            <Text style={styles.deleteTitle}>Dar de baja prenda</Text>
-            <Text style={styles.deleteMessage}>
-              ¿Estás seguro de que deseas eliminar del sistema la prenda <Text style={{fontWeight: 'bold'}}>{prendaAEliminar?.tipo} ({prendaAEliminar?.id})</Text>? 
-              Esta acción es irreversible.
-            </Text>
-            <View style={styles.deleteActions}>
-              <TouchableOpacity style={styles.deleteCancelBtn} onPress={() => setPrendaAEliminar(null)}><Text style={styles.deleteCancelText}>Cancelar</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.deleteConfirmBtn} onPress={confirmarBaja}><Text style={styles.deleteConfirmText}>Sí, dar de baja</Text></TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
 
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  // ... (los estilos se mantienen exactamente igual que en la respuesta anterior)
   container: { flex: 1, backgroundColor: '#F7F9F7' },
   content: { padding: 20, paddingTop: 40, paddingBottom: 40 },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
   backButton: { padding: 5 },
   backText: { color: '#2E7D32', fontWeight: 'bold', fontSize: 16 },
   linkText: { color: '#1565C0', fontWeight: 'bold', fontSize: 16 },
-  titulo: { fontSize: 28, fontWeight: '900', color: '#1B4D21', marginBottom: 20 },
-
+  titulo: { fontSize: 28, fontWeight: 'bold', color: '#1B4D21', marginBottom: 20 },
+  
   tabContainer: { flexDirection: 'row', backgroundColor: '#E8F5E9', borderRadius: 10, padding: 5, marginBottom: 20 },
   tab: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: 8 },
-  tabActive: { backgroundColor: '#FFF', shadowColor: '#000', shadowOpacity: 0.1, elevation: 2 },
+  tabActive: { backgroundColor: '#FFF', elevation: 2 },
   tabText: { fontSize: 14, fontWeight: 'bold', color: '#666' },
   tabTextActive: { color: '#1B4D21' },
 
   formGroup: { marginBottom: 20 },
   label: { fontSize: 14, fontWeight: 'bold', color: '#333', marginBottom: 8 },
-  selectInput: { backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 10, padding: 15, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  selectInput: { backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 10, padding: 15, flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 },
   selectText: { fontSize: 16, color: '#333' },
   selectPlaceholder: { fontSize: 16, color: '#999' },
   arrow: { fontSize: 12, color: '#999' },
-  input: { backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 10, padding: 15, fontSize: 16, color: '#333' },
-  nfcRow: { flexDirection: 'row', alignItems: 'center' },
-  nfcButton: { backgroundColor: '#E8F5E9', padding: 15, borderRadius: 10, marginLeft: 10, borderWidth: 1, borderColor: '#C8E6C9' },
-  nfcButtonText: { color: '#1B4D21', fontWeight: 'bold' },
-  botonGuardar: { backgroundColor: '#1B4D21', padding: 18, borderRadius: 12, alignItems: 'center', marginTop: 20 },
+  inputBlock: { backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 10, padding: 15, fontSize: 16, color: '#333', marginBottom: 10 },
+  
+  btnScanFull: { backgroundColor: '#E3F2FD', padding: 15, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#BBDEFB' },
+  btnScanCopy: { backgroundColor: '#F3E5F5', padding: 15, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#E1BEE7', marginBottom: 10 },
+  btnScanFullDanger: { backgroundColor: '#FFEBEE', padding: 15, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#FFCDD2', marginBottom: 15 },
+  btnScanFullText: { color: '#0D47A1', fontWeight: 'bold', fontSize: 16 },
+
+  botonGuardar: { backgroundColor: '#1B4D21', padding: 18, borderRadius: 12, alignItems: 'center', marginTop: 10 },
   textoBoton: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
 
-  scanBajaButton: { backgroundColor: '#FFEBEE', borderWidth: 1, borderColor: '#FFCDD2', padding: 15, borderRadius: 10, alignItems: 'center', marginBottom: 20 },
-  scanBajaText: { color: '#D32F2F', fontWeight: 'bold', fontSize: 16 },
-  searchContainer: { flexDirection: 'row', backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 10, paddingHorizontal: 15, alignItems: 'center', marginBottom: 10 },
-  searchIcon: { fontSize: 18, marginRight: 10 },
-  searchInput: { flex: 1, paddingVertical: 12, fontSize: 16, color: '#333' },
-  infoText: { fontSize: 12, color: '#666', marginBottom: 15, fontStyle: 'italic' },
-  
-  prendaCard: { backgroundColor: '#FFF', padding: 15, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E0E0E0', shadowColor: '#000', shadowOpacity: 0.03, elevation: 1 },
-  prendaHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  prendaId: { fontSize: 12, fontWeight: 'bold', color: '#888' },
-  estadoBadge: { backgroundColor: '#E8F5E9', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  estadoText: { fontSize: 11, fontWeight: 'bold', color: '#2E7D32' },
-
-  prendaNombre: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 5 },
-  prendaComp: { fontSize: 14, color: '#666', marginBottom: 15 },
-  deleteBtn: { borderTopWidth: 1, borderTopColor: '#EEE', paddingTop: 12, alignItems: 'center' },
-  deleteBtnText: { color: '#D32F2F', fontWeight: 'bold', fontSize: 14 },
-
-  emptyState: { alignItems: 'center', marginTop: 30, padding: 20 },
-  emptyIcon: { fontSize: 40, marginBottom: 10, opacity: 0.5 },
-  emptyText: { textAlign: 'center', color: '#888', fontSize: 14 },
+  prendaCard: { backgroundColor: '#FFF', padding: 15, borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: '#E0E0E0' },
+  prendaId: { fontSize: 12, color: '#888', fontWeight: 'bold' },
+  prendaNombre: { fontSize: 18, fontWeight: 'bold', color: '#333', marginVertical: 5 },
+  cardActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, borderTopWidth: 1, borderTopColor: '#EEE', paddingTop: 10 },
+  actionBtn: { padding: 5 },
+  actionBtnText: { fontWeight: 'bold', color: '#1565C0' },
 
   modalContainer: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' },
   modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: '80%' },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#333', marginBottom: 15, textAlign: 'center' },
-  modalSearchContainer: { flexDirection: 'row', backgroundColor: '#F5F5F5', borderRadius: 10, paddingHorizontal: 15, alignItems: 'center', marginBottom: 15 },
-  modalSearchIcon: { fontSize: 18, marginRight: 10 },
-  modalSearchInput: { flex: 1, paddingVertical: 12, fontSize: 16, color: '#333' },
-  modalItem: { paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: '#EEE' },
-  modalItemText: { fontSize: 16, color: '#333', textAlign: 'center' },
+  modalTitle: { fontSize: 20, fontWeight: 'bold', textAlign: 'center', marginBottom: 15 },
+  modalSearchInput: { backgroundColor: '#F5F5F5', padding: 12, borderRadius: 10, marginBottom: 15 },
+  modalItem: { padding: 15, borderBottomWidth: 1, borderBottomColor: '#EEE' },
+  modalItemText: { fontSize: 16, textAlign: 'center' },
   modalClose: { marginTop: 15, padding: 15, backgroundColor: '#F5F5F5', borderRadius: 10, alignItems: 'center' },
-  modalCloseText: { color: '#D32F2F', fontWeight: 'bold', fontSize: 16 },
+  modalCloseText: { color: '#D32F2F', fontWeight: 'bold' },
 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  deleteModalBox: { backgroundColor: '#FFF', width: '85%', padding: 25, borderRadius: 16, alignItems: 'center', elevation: 5 },
-  deleteIcon: { fontSize: 40, marginBottom: 15 },
-  deleteTitle: { fontSize: 20, fontWeight: 'bold', color: '#333', marginBottom: 10 },
-  deleteMessage: { fontSize: 14, color: '#666', textAlign: 'center', lineHeight: 22, marginBottom: 25 },
-  deleteActions: { flexDirection: 'row', justifyContent: 'space-between', width: '100%' },
-  deleteCancelBtn: { flex: 1, padding: 15, backgroundColor: '#F5F5F5', borderRadius: 10, marginRight: 10, alignItems: 'center' },
-  deleteCancelText: { color: '#555', fontWeight: 'bold', fontSize: 16 },
-  deleteConfirmBtn: { flex: 1, padding: 15, backgroundColor: '#D32F2F', borderRadius: 10, alignItems: 'center' },
-  deleteConfirmText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
+  modalContainerCenter: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)' },
+  
+  scanningOverlay: { flex: 1, backgroundColor: 'rgba(27, 77, 33, 0.95)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  scanningBox: { backgroundColor: '#FFF', width: '100%', padding: 30, borderRadius: 20, alignItems: 'center' },
+  scanningTitle: { fontSize: 22, fontWeight: 'bold', color: '#1B4D21', marginTop: 20, marginBottom: 15 },
+  scanningText: { fontSize: 15, color: '#444', textAlign: 'center', lineHeight: 24, marginBottom: 25 },
+  cancelScanBtn: { padding: 15, backgroundColor: '#FFEBEE', borderRadius: 10, width: '100%', alignItems: 'center' },
+  cancelScanText: { color: '#D32F2F', fontWeight: 'bold', fontSize: 16 },
+
+  editBox: { backgroundColor: '#FFF', width: '85%', padding: 25, borderRadius: 16, elevation: 5 },
+  guideButtonsRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 15 },
+  guideCancelBtn: { flex: 1, padding: 15, backgroundColor: '#F5F5F5', borderRadius: 10, marginRight: 10, alignItems: 'center' },
+  guideCancelText: { color: '#555', fontWeight: 'bold' },
+  guideActionBtn: { flex: 1, backgroundColor: '#1B4D21', padding: 15, borderRadius: 10, alignItems: 'center' },
+  guideActionText: { color: '#FFF', fontWeight: 'bold' },
 });

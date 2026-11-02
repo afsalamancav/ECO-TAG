@@ -1,62 +1,119 @@
 import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert, Modal } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useState, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import QRCode from 'react-native-qrcode-svg';
 import ViewShot from 'react-native-view-shot';
 import * as Sharing from 'expo-sharing';
-
-const INITIAL_HABS = ['301', '302', '305', '401', '402'];
+// IMPORTAMOS SUPABASE
+import { supabase } from '../../conexion/supabase';
 
 export default function GestionHabitaciones() {
   const router = useRouter();
   
-  const [habitaciones, setHabitaciones] = useState(INITIAL_HABS);
+  // Estados para los datos de la base de datos
+  const [habitaciones, setHabitaciones] = useState<any[]>([]);
+  const [cargando, setCargando] = useState(true);
+  
+  // Estados para el formulario
   const [nuevaHab, setNuevaHab] = useState('');
   const [searchHab, setSearchHab] = useState('');
 
+  // Estados para los Modales
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editHabText, setEditHabText] = useState('');
   const [editIndex, setEditIndex] = useState<number | null>(null);
+  const [editId, setEditId] = useState<string | null>(null); // Necesitamos el ID de la BD
 
-  // Estado para la vista previa del QR
   const [qrVisible, setQrVisible] = useState<string | null>(null);
   const viewShotRef = useRef<any>(null);
 
-  const agregarHabitacion = () => {
+  // --- 1. LEER DATOS AL INICIAR ---
+  useEffect(() => {
+    cargarHabitaciones();
+  }, []);
+
+  const cargarHabitaciones = async () => {
+    setCargando(true);
+    const { data, error } = await supabase
+      .from('habitaciones')
+      .select('*')
+      .order('numero_habitacion', { ascending: true });
+
+    if (error) {
+      Alert.alert("Error de conexión", error.message);
+      console.error(error);
+    } else {
+      setHabitaciones(data || []);
+    }
+    setCargando(false);
+  };
+
+  // --- 2. CREAR HABITACIÓN ---
+  const agregarHabitacion = async () => {
     if (!nuevaHab.trim()) return;
-    if (habitaciones.includes(nuevaHab.trim())) {
+    
+    // Validar que no exista localmente (o podrías dejar que la BD lo valide con el UNIQUE)
+    if (habitaciones.find(h => h.numero_habitacion === nuevaHab.trim())) {
       Alert.alert("Error", "Esta habitación ya existe.");
       return;
     }
-    setHabitaciones([...habitaciones, nuevaHab.trim()]);
-    setNuevaHab('');
+
+    // Generamos un QR único automáticamente
+    const nuevoQr = `QR-HAB-${nuevaHab.trim()}`;
+
+    const { error } = await supabase
+      .from('habitaciones')
+      .insert([{ numero_habitacion: nuevaHab.trim(), qr_uid: nuevoQr }]);
+
+    if (error) {
+      Alert.alert("Error al guardar", error.message);
+    } else {
+      setNuevaHab('');
+      cargarHabitaciones(); // Recargamos la lista
+    }
   };
 
-  const borrarHabitacion = (hab: string) => {
+  // --- 3. ELIMINAR HABITACIÓN ---
+  const borrarHabitacion = (id: string, numero: string) => {
     Alert.alert(
       "Eliminar Habitación",
-      `¿Seguro que deseas eliminar la habitación ${hab}? Su código QR dejará de funcionar.`,
+      `¿Seguro que deseas eliminar la habitación ${numero}? Su código QR dejará de funcionar.`,
       [
         { text: "Cancelar", style: "cancel" },
-        { text: "Eliminar", style: "destructive", onPress: () => {
-            setHabitaciones(habitaciones.filter(h => h !== hab));
+        { text: "Eliminar", style: "destructive", onPress: async () => {
+            const { error } = await supabase.from('habitaciones').delete().eq('id', id);
+            if (error) Alert.alert("Error", error.message);
+            else cargarHabitaciones();
         }}
       ]
     );
   };
 
-  const abrirEdicion = (hab: string, index: number) => {
-    setEditHabText(hab);
+  // --- 4. EDITAR HABITACIÓN ---
+  const abrirEdicion = (hab: any, index: number) => {
+    setEditHabText(hab.numero_habitacion);
     setEditIndex(index);
+    setEditId(hab.id);
     setEditModalVisible(true);
   };
 
-  const guardarEdicion = () => {
-    if (!editHabText.trim() || editIndex === null) return;
-    const nuevas = [...habitaciones];
-    nuevas[editIndex] = editHabText.trim();
-    setHabitaciones(nuevas);
-    setEditModalVisible(false);
+  const guardarEdicion = async () => {
+    if (!editHabText.trim() || !editId) return;
+    
+    // Al cambiar el número, también actualizamos su QR
+    const nuevoQr = `QR-HAB-${editHabText.trim()}`;
+
+    const { error } = await supabase
+      .from('habitaciones')
+      .update({ numero_habitacion: editHabText.trim(), qr_uid: nuevoQr })
+      .eq('id', editId);
+
+    if (error) {
+      Alert.alert("Error al editar", error.message);
+    } else {
+      setEditModalVisible(false);
+      cargarHabitaciones();
+    }
   };
 
   const descargarQR = async () => {
@@ -75,17 +132,28 @@ export default function GestionHabitaciones() {
     }
   };
 
-  const habitacionesFiltradas = habitaciones.filter(h => h.toLowerCase().includes(searchHab.toLowerCase()));
+  const habitacionesFiltradas = habitaciones.filter(h => 
+    h.numero_habitacion.toLowerCase().includes(searchHab.toLowerCase())
+  );
+
+  // Mostrar pantalla de carga
+  if (cargando) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <Text style={{ fontSize: 18, color: '#1565C0' }}>Cargando habitaciones desde la nube...</Text>
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       
-      {/* MODAL DE EDICIÓN */}
+      {/* MODAL EDITAR */}
       <Modal visible={editModalVisible} transparent={true} animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Editar Habitación</Text>
-            <TextInput style={styles.modalInput} value={editHabText} onChangeText={setEditHabText} autoFocus />
+            <TextInput style={styles.modalInput} value={editHabText} onChangeText={setEditHabText} autoFocus keyboardType="numeric" />
             <View style={styles.modalButtons}>
               <TouchableOpacity style={styles.cancelButton} onPress={() => setEditModalVisible(false)}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity>
               <TouchableOpacity style={styles.saveButton} onPress={guardarEdicion}><Text style={styles.saveText}>Guardar</Text></TouchableOpacity>
@@ -94,7 +162,7 @@ export default function GestionHabitaciones() {
         </View>
       </Modal>
 
-      {/* MODAL DE VISTA PREVIA DEL QR */}
+      {/* MODAL VER QR */}
       <Modal visible={qrVisible !== null} transparent={true} animationType="slide">
         <View style={styles.qrModalOverlay}>
           <View style={styles.qrModalContainer}>
@@ -112,7 +180,6 @@ export default function GestionHabitaciones() {
               <TouchableOpacity style={styles.downloadQRButton} onPress={descargarQR}>
                 <Text style={styles.downloadQRText}>⬇️ Descargar Imagen</Text>
               </TouchableOpacity>
-              
               <TouchableOpacity style={styles.closeQRButton} onPress={() => setQrVisible(null)}>
                 <Text style={styles.closeQRText}>Cerrar</Text>
               </TouchableOpacity>
@@ -126,12 +193,12 @@ export default function GestionHabitaciones() {
       </TouchableOpacity>
 
       <Text style={styles.titulo}>Habitaciones y QR</Text>
-      <Text style={styles.subtitulo}>Administra las habitaciones del hotel y sus códigos de acceso.</Text>
+      <Text style={styles.subtitulo}>Administra las habitaciones del hotel conectadas a la nube.</Text>
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>🚪 Nueva Habitación</Text>
         <View style={styles.inputRow}>
-          <TextInput style={styles.input} placeholder="Ej: 501" value={nuevaHab} onChangeText={setNuevaHab} />
+          <TextInput style={styles.input} placeholder="Ej: 501" value={nuevaHab} onChangeText={setNuevaHab} keyboardType="numeric" />
           <TouchableOpacity style={styles.addButton} onPress={agregarHabitacion}>
             <Text style={styles.addButtonText}>+</Text>
           </TouchableOpacity>
@@ -146,36 +213,34 @@ export default function GestionHabitaciones() {
       </View>
 
       {habitacionesFiltradas.length === 0 ? (
-        <Text style={styles.emptyText}>No se encontraron habitaciones.</Text>
+        <Text style={styles.emptyText}>No hay habitaciones registradas.</Text>
       ) : (
-        habitacionesFiltradas.map((hab) => {
-          const originalIndex = habitaciones.indexOf(hab);
-          return (
-            <View key={hab} style={styles.habItem}>
-              <View style={styles.habInfo}>
-                <Text style={styles.habText}>Habitación {hab}</Text>
-                <Text style={styles.habSubText}>Archivo: HAB_{hab}_QR.jpg</Text>
-              </View>
-              <View style={styles.habActions}>
-                <TouchableOpacity onPress={() => abrirEdicion(hab, originalIndex)} style={styles.iconButton}>
-                  <Text style={styles.iconText}>✏️</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => borrarHabitacion(hab)} style={styles.iconButton}>
-                  <Text style={styles.iconText}>🗑️</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.qrButton} onPress={() => setQrVisible(hab)}>
-                  <Text style={styles.qrButtonText}>Ver QR</Text>
-                </TouchableOpacity>
-              </View>
+        habitacionesFiltradas.map((hab, index) => (
+          <View key={hab.id} style={styles.habItem}>
+            <View style={styles.habInfo}>
+              <Text style={styles.habText}>Habitación {hab.numero_habitacion}</Text>
+              <Text style={styles.habSubText}>QR: {hab.qr_uid}</Text>
             </View>
-          );
-        })
+            <View style={styles.habActions}>
+              <TouchableOpacity onPress={() => abrirEdicion(hab, index)} style={styles.iconButton}>
+                <Text style={styles.iconText}>✏️</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => borrarHabitacion(hab.id, hab.numero_habitacion)} style={styles.iconButton}>
+                <Text style={styles.iconText}>🗑️</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.qrButton} onPress={() => setQrVisible(hab.numero_habitacion)}>
+                <Text style={styles.qrButtonText}>Ver QR</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ))
       )}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  // ... (Mantén exactamente los mismos estilos que ya tenías en la pantalla)
   container: { flex: 1, backgroundColor: '#F0F4F8' },
   content: { padding: 20, paddingTop: 40, paddingBottom: 40 },
   backButton: { marginBottom: 15 },
@@ -202,19 +267,6 @@ const styles = StyleSheet.create({
   qrButton: { backgroundColor: '#E3F2FD', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, marginLeft: 5 },
   qrButtonText: { color: '#1565C0', fontWeight: 'bold', fontSize: 12 },
   emptyText: { textAlign: 'center', color: '#999', fontStyle: 'italic', padding: 10 },
-  
-  // Estilos del modal de Edición
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  modalBox: { backgroundColor: '#FFF', width: '80%', padding: 20, borderRadius: 12, elevation: 5 },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#333', marginBottom: 15 },
-  modalInput: { backgroundColor: '#F5F5F5', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, padding: 12, fontSize: 16, marginBottom: 20 },
-  modalButtons: { flexDirection: 'row', justifyContent: 'flex-end' },
-  cancelButton: { padding: 10, marginRight: 10 },
-  cancelText: { color: '#666', fontWeight: 'bold', fontSize: 16 },
-  saveButton: { backgroundColor: '#1565C0', padding: 10, paddingHorizontal: 20, borderRadius: 8 },
-  saveText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
-
-  // NUEVOS ESTILOS PARA EL MODAL DEL QR
   qrModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   qrModalContainer: { backgroundColor: '#FFF', width: '100%', borderRadius: 20, padding: 25, alignItems: 'center', elevation: 10 },
   qrPreviewTitle: { fontSize: 22, fontWeight: 'bold', color: '#0D47A1', marginBottom: 20 },
@@ -226,4 +278,13 @@ const styles = StyleSheet.create({
   downloadQRText: { color: '#FFF', fontWeight: 'bold', fontSize: 15 },
   closeQRButton: { backgroundColor: '#F5F5F5', padding: 15, borderRadius: 10, alignItems: 'center', width: 100, borderWidth: 1, borderColor: '#E0E0E0' },
   closeQRText: { color: '#D32F2F', fontWeight: 'bold', fontSize: 15 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  modalBox: { backgroundColor: '#FFF', width: '80%', padding: 20, borderRadius: 12, elevation: 5 },
+  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#333', marginBottom: 15 },
+  modalInput: { backgroundColor: '#F5F5F5', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, padding: 12, fontSize: 16, marginBottom: 20 },
+  modalButtons: { flexDirection: 'row', justifyContent: 'flex-end' },
+  cancelButton: { padding: 10, marginRight: 10 },
+  cancelText: { color: '#666', fontWeight: 'bold', fontSize: 16 },
+  saveButton: { backgroundColor: '#1565C0', padding: 10, paddingHorizontal: 20, borderRadius: 8 },
+  saveText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
 });

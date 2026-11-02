@@ -1,209 +1,219 @@
 import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Modal, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { supabase } from '../../conexion/supabase';
 
-const INITIAL_TIPOS = ['Sábana Queen', 'Sábana King', 'Toalla de baño', 'Bata de baño', 'Almohada'];
-const MATERIALES_ESTANDAR = ['Algodón', 'Poliéster', 'Tencel', 'Lino', 'Microfibra', 'Elastano', 'Seda', 'Bambú', 'Otro...'];
-
-const INITIAL_COMPS = [
-  { id: '1', materiales: [{ nombre: 'Algodón', porcentaje: 100 }] },
-  { id: '2', materiales: [{ nombre: 'Algodón', porcentaje: 50 }, { nombre: 'Poliéster', porcentaje: 50 }] },
-];
+const MATERIALES_BASE = ['Algodón', 'Poliéster', 'Tencel', 'Lino', 'Microfibra', 'Elastano', 'Seda', 'Bambú', 'Otro...'];
 
 export default function CatalogoTextil() {
   const router = useRouter();
   
-  const [tipos, setTipos] = useState(INITIAL_TIPOS);
-  const [composiciones, setComposiciones] = useState(INITIAL_COMPS);
+  // Listas de la base de datos
+  const [tiposPrenda, setTiposPrenda] = useState<any[]>([]);
+  const [composiciones, setComposiciones] = useState<any[]>([]);
+  const [cargando, setCargando] = useState(true);
 
-  const [nuevoTipo, setNuevoTipo] = useState('');
+  // Búsquedas
   const [searchTipo, setSearchTipo] = useState('');
   const [searchComp, setSearchComp] = useState('');
 
-  // Modales
+  // Inputs
+  const [nuevoTipo, setNuevoTipo] = useState('');
+  
+  // Estados para el Constructor de Composición
   const [modalCompVisible, setModalCompVisible] = useState(false);
+  const [materialesTemp, setMaterialesTemp] = useState([{ nombre: 'Algodón', porcentaje: '100' }]);
+  
+  // Modal para seleccionar material base
   const [modalMaterialVisible, setModalMaterialVisible] = useState(false);
-  const [modalDeleteVisible, setModalDeleteVisible] = useState(false);
-  const [modalEditTipoVisible, setModalEditTipoVisible] = useState(false);
-  const [modalEditCompVisible, setModalEditCompVisible] = useState(false);
-
-  // Estados de edición
-  const [itemAEliminar, setItemAEliminar] = useState<{ tipo: 'tipo' | 'comp', id: string, nombre: string } | null>(null);
-  const [tipoEditando, setTipoEditando] = useState<{ viejo: string, nuevo: string }>({ viejo: '', nuevo: '' });
-  const [compEditando, setCompEditando] = useState<{ id: string, materiales: any[] }>({ id: '', materiales: [] });
-
-  // Estados para formulario de composición
-  const [materialesTemp, setMaterialesTemp] = useState([{ nombre: 'Algodón', porcentaje: '100', esOtro: false }]);
   const [materialIndexEditando, setMaterialIndexEditando] = useState<number | null>(null);
 
-  // --- CRUD TIPOS DE PRENDA ---
-  const agregarTipo = () => {
+  // Estado para Editar
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editItemText, setEditItemText] = useState('');
+  const [editContext, setEditContext] = useState<{ tabla: string, id: string, nombreOriginal: string } | null>(null);
+
+  // Estado para Borrar
+  const [modalDeleteVisible, setModalDeleteVisible] = useState(false);
+  const [itemAEliminar, setItemAEliminar] = useState<{ tabla: string, id: string, nombre: string } | null>(null);
+
+  useEffect(() => { cargarDatos(); }, []);
+
+  const cargarDatos = async () => {
+    setCargando(true);
+    const { data: dataTipos, error: errTipos } = await supabase.from('tipos_prenda').select('*').order('nombre');
+    const { data: dataComps, error: errComps } = await supabase.from('tipos_tela').select('*').order('nombre');
+
+    if (errTipos) console.log("Error cargando tipos:", errTipos.message);
+    if (errComps) console.log("Error cargando telas:", errComps.message);
+
+    if (dataTipos) setTiposPrenda(dataTipos);
+    if (dataComps) setComposiciones(dataComps);
+    setCargando(false);
+  };
+
+  // --- CREAR TIPO DE PRENDA ---
+  const agregarTipo = async () => {
     if (!nuevoTipo.trim()) return;
-    setTipos([...tipos, nuevoTipo.trim()]);
-    setNuevoTipo('');
+    const { error } = await supabase.from('tipos_prenda').insert([{ nombre: nuevoTipo.trim() }]);
+    if (error) Alert.alert("Error", error.message);
+    else { setNuevoTipo(''); cargarDatos(); }
   };
 
-  const guardarEdicionTipo = () => {
-    if (!tipoEditando.nuevo.trim()) return;
-    setTipos(tipos.map(t => t === tipoEditando.viejo ? tipoEditando.nuevo.trim() : t));
-    setModalEditTipoVisible(false);
+  // --- CONSTRUCTOR DE COMPOSICIONES ---
+  const actualizarMaterial = (index: number, campo: string, valor: string) => {
+    const nuevos = [...materialesTemp];
+    (nuevos[index] as any)[campo] = valor;
+    setMaterialesTemp(nuevos);
   };
 
-  // --- CRUD COMPOSICIONES ---
-  const guardarComposicion = () => {
-    const camposVacios = materialesTemp.some(m => !m.nombre.trim() || !m.porcentaje.trim());
-    if (camposVacios) return Alert.alert("Error", "Todos los materiales deben tener nombre y porcentaje.");
-
-    const suma = materialesTemp.reduce((acc, m) => acc + (parseInt(m.porcentaje) || 0), 0);
-    if (suma !== 100) return Alert.alert("Error", `Los porcentajes suman ${suma}%. Deben sumar 100%.`);
-
-    const nuevaComp = {
-      id: Date.now().toString(),
-      materiales: materialesTemp.map(m => ({ nombre: m.nombre.trim(), porcentaje: parseInt(m.porcentaje) }))
-    };
-
-    setComposiciones([...composiciones, nuevaComp]);
-    setModalCompVisible(false);
-    setMaterialesTemp([{ nombre: 'Algodón', porcentaje: '100', esOtro: false }]);
-  };
-
-  const abrirEdicionComp = (comp: any) => {
-    setCompEditando({ id: comp.id, materiales: comp.materiales.map((m: any) => ({ ...m, porcentaje: m.porcentaje.toString(), esOtro: !MATERIALES_ESTANDAR.includes(m.nombre) })) });
-    setModalEditCompVisible(true);
-  };
-
-  const guardarEdicionComp = () => {
-    const camposVacios = compEditando.materiales.some(m => !m.nombre.trim() || !m.porcentaje.trim());
-    if (camposVacios) return Alert.alert("Error", "Todos los materiales deben tener nombre y porcentaje.");
-
-    const suma = compEditando.materiales.reduce((acc, m) => acc + (parseInt(m.porcentaje) || 0), 0);
-    if (suma !== 100) return Alert.alert("Error", `Los porcentajes suman ${suma}%. Deben sumar 100%.`);
-
-    setComposiciones(composiciones.map(c => 
-      c.id === compEditando.id 
-        ? { ...c, materiales: compEditando.materiales.map(m => ({ nombre: m.nombre.trim(), porcentaje: parseInt(m.porcentaje) })) } 
-        : c
-    ));
-    setModalEditCompVisible(false);
-  };
-
-  // --- LÓGICA DE BORRADO SEGURO ---
-  const confirmarBorrado = () => {
-    if (!itemAEliminar) return;
-    if (itemAEliminar.tipo === 'tipo') setTipos(tipos.filter(t => t !== itemAEliminar.id));
-    else setComposiciones(composiciones.filter(c => c.id !== itemAEliminar.id));
-    setModalDeleteVisible(false);
-    setItemAEliminar(null);
-  };
-
-  // --- LÓGICA DE MATERIALES DINÁMICOS ---
-    const actualizarMaterial = (index: number, campo: string, valor: string, isEdit: boolean) => {
-    if (isEdit) {
-      const nuevos = [...compEditando.materiales];
-      (nuevos[index] as any)[campo] = valor; // <-- Cambio aquí
-      setCompEditando({ ...compEditando, materiales: nuevos });
-    } else {
-      const nuevos = [...materialesTemp];
-      (nuevos[index] as any)[campo] = valor; // <-- Cambio aquí
-      setMaterialesTemp(nuevos);
-    }
-  };
-
-  const seleccionarMaterial = (mat: string) => {
+  const seleccionarMaterialBase = (nombre: string) => {
     if (materialIndexEditando === null) return;
     const nuevos = [...materialesTemp];
-    if (mat === 'Otro...') {
-      nuevos[materialIndexEditando].nombre = '';
-      nuevos[materialIndexEditando].esOtro = true;
-    } else {
-      nuevos[materialIndexEditando].nombre = mat;
-      nuevos[materialIndexEditando].esOtro = false;
-    }
+    nuevos[materialIndexEditando].nombre = nombre;
     setMaterialesTemp(nuevos);
     setModalMaterialVisible(false);
   };
 
-  const formatComp = (comp: any) => comp.materiales.map((m: any) => `${m.porcentaje}% ${m.nombre}`).join(' / ');
+  const guardarComposicion = async () => {
+    // Validar que no haya vacíos
+    const camposVacios = materialesTemp.some(m => !m.nombre.trim() || !m.porcentaje.trim());
+    if (camposVacios) return Alert.alert("Error", "Todos los materiales deben tener nombre y porcentaje.");
+
+    // Validar que sume 100
+    const suma = materialesTemp.reduce((acc, m) => acc + (parseInt(m.porcentaje) || 0), 0);
+    if (suma !== 100) return Alert.alert("Error", `Los porcentajes suman ${suma}%. Deben sumar 100%.`);
+
+    // Crear string compuesto (ej: "50% Algodón / 50% Poliéster")
+    const nombreCompuesto = materialesTemp.map(m => `${m.porcentaje}% ${m.nombre}`).join(' / ');
+
+    const { error } = await supabase.from('tipos_tela').insert([
+      { 
+        nombre: nombreCompuesto, 
+        impacto_ambiental: 'Medio', 
+        recomendacion: 'Lavar según instrucciones.',
+        alternativa_sostenible: 'Consultar alternativas.'
+      }
+    ]);
+
+    if (error) Alert.alert("Error", error.message);
+    else {
+      setModalCompVisible(false);
+      setMaterialesTemp([{ nombre: 'Algodón', porcentaje: '100' }]);
+      cargarDatos();
+    }
+  };
+
+  // --- EDITAR ---
+  const abrirEdicion = (tabla: string, id: string, nombreActual: string) => {
+    setEditItemText(nombreActual);
+    setEditContext({ tabla, id, nombreOriginal: nombreActual });
+    setEditModalVisible(true);
+  };
+
+  const guardarEdicion = async () => {
+    if (!editItemText.trim() || !editContext) return;
+
+    const { error } = await supabase
+      .from(editContext.tabla)
+      .update({ nombre: editItemText.trim() })
+      .eq('id', editContext.id);
+
+    if (error) Alert.alert("Error al editar", error.message);
+    else {
+      setEditModalVisible(false);
+      cargarDatos();
+    }
+  };
+
+  // --- BORRAR ---
+  const confirmarBorrado = async () => {
+    if (!itemAEliminar) return;
+    const { error } = await supabase.from(itemAEliminar.tabla).delete().eq('id', itemAEliminar.id);
+    if (error) Alert.alert("No se puede borrar", "Puede que esté siendo usado en un artículo registrado.");
+    else cargarDatos();
+    setModalDeleteVisible(false);
+    setItemAEliminar(null);
+  };
+
+  if (cargando) return <View style={styles.center}><Text>Cargando catálogo...</Text></View>;
+
+  const tiposFiltrados = tiposPrenda.filter(t => t.nombre.toLowerCase().includes(searchTipo.toLowerCase()));
+  const compsFiltradas = composiciones.filter(c => c.nombre.toLowerCase().includes(searchComp.toLowerCase()));
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       
-      {/* MODAL EDITAR TIPO */}
-      <Modal visible={modalEditTipoVisible} transparent={true} animationType="fade">
+      {/* MODAL EDITAR */}
+      <Modal visible={editModalVisible} transparent={true} animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Editar Tipo de Prenda</Text>
-            <TextInput style={styles.input} value={tipoEditando.nuevo} onChangeText={(val) => setTipoEditando({ ...tipoEditando, nuevo: val })} autoFocus />
+            <Text style={styles.modalTitle}>Editar {editContext?.tabla === 'tipos_prenda' ? 'Tipo de Prenda' : 'Composición'}</Text>
+            <TextInput 
+              style={styles.input} 
+              placeholder="Escribe el nuevo nombre" 
+              placeholderTextColor="#999" 
+              value={editItemText} 
+              onChangeText={setEditItemText} 
+              autoFocus 
+            />
             <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.cancelButton} onPress={() => setModalEditTipoVisible(false)}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.saveButton} onPress={guardarEdicionTipo}><Text style={styles.saveText}>Guardar</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.cancelButton} onPress={() => setEditModalVisible(false)}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.saveButton} onPress={guardarEdicion}><Text style={styles.saveText}>Guardar</Text></TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
 
-      {/* MODAL EDITAR COMPOSICIÓN */}
-      <Modal visible={modalEditCompVisible} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Editar Composición</Text>
-            <ScrollView style={{ maxHeight: 300, marginBottom: 15 }}>
-              {compEditando.materiales.map((mat, index) => (
-                <View key={index} style={styles.materialRow}>
-                  <TextInput style={[styles.input, { flex: 1, marginRight: 10 }]} value={mat.nombre} onChangeText={(val) => actualizarMaterial(index, 'nombre', val, true)} placeholder="Material" />
-                  <TextInput style={[styles.input, { width: 70 }]} keyboardType="numeric" value={mat.porcentaje} onChangeText={(val) => actualizarMaterial(index, 'porcentaje', val, true)} placeholder="%" />
-                </View>
+      {/* MODAL SELECCIONAR MATERIAL */}
+      <Modal visible={modalMaterialVisible} transparent={true} animationType="slide">
+        <View style={styles.modalOverlayBottom}>
+          <View style={styles.modalContentBottom}>
+            <Text style={styles.modalTitle}>Seleccionar Material</Text>
+            <ScrollView style={{ maxHeight: 300 }}>
+              {MATERIALES_BASE.map((mat) => (
+                <TouchableOpacity key={mat} style={styles.materialOption} onPress={() => seleccionarMaterialBase(mat)}>
+                  <Text style={styles.materialOptionText}>{mat}</Text>
+                </TouchableOpacity>
               ))}
             </ScrollView>
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.cancelButton} onPress={() => setModalEditCompVisible(false)}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.saveButton} onPress={guardarEdicionComp}><Text style={styles.saveText}>Guardar Cambios</Text></TouchableOpacity>
-            </View>
+            <TouchableOpacity style={styles.cancelButtonBottom} onPress={() => setModalMaterialVisible(false)}>
+              <Text style={styles.cancelTextBottom}>Cancelar</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      {/* MODAL CONFIRMAR BORRADO */}
-      <Modal visible={modalDeleteVisible} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.deleteModalBox}>
-            <Text style={styles.deleteIcon}>🗑️</Text>
-            <Text style={styles.deleteTitle}>¿Eliminar registro?</Text>
-            <Text style={styles.deleteMessage}>Estás a punto de eliminar <Text style={{fontWeight: 'bold'}}>"{itemAEliminar?.nombre}"</Text>. Esta acción no se puede deshacer.</Text>
-            <View style={styles.deleteActions}>
-              <TouchableOpacity style={styles.deleteCancelBtn} onPress={() => setModalDeleteVisible(false)}><Text style={styles.deleteCancelText}>Cancelar</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.deleteConfirmBtn} onPress={confirmarBorrado}><Text style={styles.deleteConfirmText}>Sí, eliminar</Text></TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* MODAL CREAR COMPOSICIÓN (Reutilizado) */}
+      {/* MODAL CREAR COMPOSICIÓN */}
       <Modal visible={modalCompVisible} transparent={true} animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Nueva Composición</Text>
+            <Text style={styles.modalSub}>La suma debe ser 100%.</Text>
             <ScrollView style={{ maxHeight: 300, marginBottom: 15 }}>
               {materialesTemp.map((mat, index) => (
                 <View key={index} style={styles.materialRow}>
                   <View style={{ flex: 1, marginRight: 10 }}>
                     <Text style={styles.label}>Material</Text>
-                    {mat.esOtro ? (
-                      <TextInput style={styles.input} value={mat.nombre} onChangeText={(val) => actualizarMaterial(index, 'nombre', val, false)} placeholder="Escribe" autoFocus />
-                    ) : (
-                      <TouchableOpacity style={styles.selectInput} onPress={() => { setMaterialIndexEditando(index); setModalMaterialVisible(true); }}>
-                        <Text style={styles.selectText}>{mat.nombre}</Text><Text style={styles.arrow}>▼</Text>
-                      </TouchableOpacity>
-                    )}
+                    <TouchableOpacity style={styles.selectInput} onPress={() => { setMaterialIndexEditando(index); setModalMaterialVisible(true); }}>
+                      <Text style={styles.selectText}>{mat.nombre}</Text>
+                      <Text style={styles.arrow}>▼</Text>
+                    </TouchableOpacity>
                   </View>
                   <View style={{ width: 70 }}>
                     <Text style={styles.label}>%</Text>
-                    <TextInput style={styles.input} keyboardType="numeric" value={mat.porcentaje} onChangeText={(val) => actualizarMaterial(index, 'porcentaje', val, false)} />
+                    <TextInput style={styles.input} keyboardType="numeric" placeholder="50" placeholderTextColor="#999" value={mat.porcentaje} onChangeText={(val) => actualizarMaterial(index, 'porcentaje', val)} />
                   </View>
+                  {materialesTemp.length > 1 && (
+                    <TouchableOpacity style={styles.deleteMaterialBtn} onPress={() => setMaterialesTemp(materialesTemp.filter((_, i) => i !== index))}>
+                      <Text style={styles.deleteText}>✕</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               ))}
             </ScrollView>
-            <TouchableOpacity style={styles.addMaterialBtn} onPress={() => setMaterialesTemp([...materialesTemp, { nombre: '', porcentaje: '', esOtro: false }])}><Text style={styles.addMaterialText}>+ Añadir material</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.addMaterialBtn} onPress={() => setMaterialesTemp([...materialesTemp, { nombre: '', porcentaje: '' }])}><Text style={styles.addMaterialText}>+ Añadir otro material</Text></TouchableOpacity>
+            
             <View style={styles.modalButtons}>
               <TouchableOpacity style={styles.cancelButton} onPress={() => setModalCompVisible(false)}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity>
               <TouchableOpacity style={styles.saveButton} onPress={guardarComposicion}><Text style={styles.saveText}>Guardar</Text></TouchableOpacity>
@@ -212,17 +222,17 @@ export default function CatalogoTextil() {
         </View>
       </Modal>
 
-      {/* SUB-MODAL SELECCIONAR MATERIAL */}
-      <Modal visible={modalMaterialVisible} transparent={true} animationType="slide">
-        <View style={styles.modalOverlayBottom}>
-          <View style={styles.modalContentBottom}>
-            <Text style={styles.modalTitle}>Seleccionar Material</Text>
-            <ScrollView style={{ maxHeight: 300 }}>
-              {MATERIALES_ESTANDAR.map((mat) => (
-                <TouchableOpacity key={mat} style={styles.materialOption} onPress={() => seleccionarMaterial(mat)}><Text style={styles.materialOptionText}>{mat}</Text></TouchableOpacity>
-              ))}
-            </ScrollView>
-            <TouchableOpacity style={styles.cancelButtonBottom} onPress={() => setModalMaterialVisible(false)}><Text style={styles.cancelTextBottom}>Cancelar</Text></TouchableOpacity>
+      {/* MODAL BORRAR */}
+      <Modal visible={modalDeleteVisible} transparent={true} animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.deleteModalBox}>
+            <Text style={styles.deleteIcon}>🗑️</Text>
+            <Text style={styles.deleteTitle}>¿Eliminar registro?</Text>
+            <Text style={styles.deleteMessage}>¿Seguro que deseas eliminar <Text style={{fontWeight: 'bold'}}>"{itemAEliminar?.nombre}"</Text>?</Text>
+            <View style={styles.deleteActions}>
+              <TouchableOpacity style={styles.deleteCancelBtn} onPress={() => setModalDeleteVisible(false)}><Text style={styles.deleteCancelText}>Cancelar</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.deleteConfirmBtn} onPress={confirmarBorrado}><Text style={styles.deleteConfirmText}>Sí, eliminar</Text></TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -232,27 +242,26 @@ export default function CatalogoTextil() {
       </TouchableOpacity>
 
       <Text style={styles.titulo}>Catálogo Textil</Text>
-      <Text style={styles.subtitulo}>Gestiona tipos de prenda y mezclas de telas complejas.</Text>
 
       {/* SECCIÓN TIPOS DE PRENDA */}
       <View style={styles.card}>
         <Text style={styles.cardTitle}>👕 Tipos de Prenda</Text>
         <View style={styles.inputRow}>
-          <TextInput style={styles.input} placeholder="Ej: Bata de baño" value={nuevoTipo} onChangeText={setNuevoTipo} />
+          <TextInput style={styles.input} placeholder="Ej: Bata de baño" placeholderTextColor="#999" value={nuevoTipo} onChangeText={setNuevoTipo} />
           <TouchableOpacity style={styles.addButton} onPress={agregarTipo}><Text style={styles.addButtonText}>+</Text></TouchableOpacity>
         </View>
         <View style={styles.searchContainer}>
           <Text style={styles.searchIcon}>🔍</Text>
-          <TextInput style={styles.searchInput} placeholder="Buscar tipo..." value={searchTipo} onChangeText={setSearchTipo} />
+          <TextInput style={styles.searchInput} placeholder="Buscar tipo..." placeholderTextColor="#999" value={searchTipo} onChangeText={setSearchTipo} />
         </View>
-        {tipos.filter(t => t.toLowerCase().includes(searchTipo.toLowerCase())).map((item) => (
-          <View key={item} style={styles.listItem}>
-            <Text style={styles.listItemText}>{item}</Text>
+        {tiposFiltrados.map((item) => (
+          <View key={item.id} style={styles.listItem}>
+            <Text style={styles.listItemText}>{item.nombre}</Text>
             <View style={{ flexDirection: 'row' }}>
-              <TouchableOpacity onPress={() => { setTipoEditando({ viejo: item, nuevo: item }); setModalEditTipoVisible(true); }} style={{ marginRight: 15 }}>
+              <TouchableOpacity onPress={() => abrirEdicion('tipos_prenda', item.id, item.nombre)} style={{ marginRight: 15 }}>
                 <Text style={styles.iconText}>✏️</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => { setItemAEliminar({ tipo: 'tipo', id: item, nombre: item }); setModalDeleteVisible(true); }}>
+              <TouchableOpacity onPress={() => { setItemAEliminar({ tabla: 'tipos_prenda', id: item.id, nombre: item.nombre }); setModalDeleteVisible(true); }}>
                 <Text style={styles.iconText}>🗑️</Text>
               </TouchableOpacity>
             </View>
@@ -268,23 +277,25 @@ export default function CatalogoTextil() {
         </View>
         <View style={styles.searchContainer}>
           <Text style={styles.searchIcon}>🔍</Text>
-          <TextInput style={styles.searchInput} placeholder="Buscar composición..." value={searchComp} onChangeText={setSearchComp} />
+          <TextInput style={styles.searchInput} placeholder="Buscar composición..." placeholderTextColor="#999" value={searchComp} onChangeText={setSearchComp} />
         </View>
-        {composiciones.filter(c => formatComp(c).toLowerCase().includes(searchComp.toLowerCase())).map((comp) => (
+        {compsFiltradas.map((comp) => (
           <View key={comp.id} style={styles.listItem}>
-            <Text style={styles.listItemText}>{formatComp(comp)}</Text>
+            <View>
+              <Text style={styles.listItemText}>{comp.nombre}</Text>
+              <Text style={styles.listItemSub}>Impacto: {comp.impacto_ambiental}</Text>
+            </View>
             <View style={{ flexDirection: 'row' }}>
-              <TouchableOpacity onPress={() => abrirEdicionComp(comp)} style={{ marginRight: 15 }}>
+              <TouchableOpacity onPress={() => abrirEdicion('tipos_tela', comp.id, comp.nombre)} style={{ marginRight: 15 }}>
                 <Text style={styles.iconText}>✏️</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => { setItemAEliminar({ tipo: 'comp', id: comp.id, nombre: formatComp(comp) }); setModalDeleteVisible(true); }}>
+              <TouchableOpacity onPress={() => { setItemAEliminar({ tabla: 'tipos_tela', id: comp.id, nombre: comp.nombre }); setModalDeleteVisible(true); }}>
                 <Text style={styles.iconText}>🗑️</Text>
               </TouchableOpacity>
             </View>
           </View>
         ))}
       </View>
-
     </ScrollView>
   );
 }
@@ -292,16 +303,16 @@ export default function CatalogoTextil() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F0F4F8' },
   content: { padding: 20, paddingTop: 40, paddingBottom: 40 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   backButton: { marginBottom: 15 },
   backText: { color: '#1565C0', fontWeight: 'bold', fontSize: 16 },
-  titulo: { fontSize: 28, fontWeight: '900', color: '#0D47A1', marginBottom: 5 },
-  subtitulo: { fontSize: 14, color: '#546E7A', marginBottom: 25 },
+  titulo: { fontSize: 28, fontWeight: '900', color: '#0D47A1', marginBottom: 25 },
   card: { backgroundColor: '#FFF', padding: 20, borderRadius: 12, marginBottom: 20, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 10, elevation: 3 },
   cardTitle: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 15 },
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
   inputRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  input: { flex: 1, backgroundColor: '#F5F5F5', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, padding: 12, fontSize: 16 },
-  addButton: { backgroundColor: '#1565C0', width: 48, height: 48, borderRadius: 8, justifyContent: 'center', alignItems: 'center', marginLeft: 10 },
+  input: { flex: 1, backgroundColor: '#F5F5F5', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, padding: 12, fontSize: 16, color: '#333', marginBottom: 10 },
+  addButton: { backgroundColor: '#1565C0', width: 48, height: 48, borderRadius: 8, justifyContent: 'center', alignItems: 'center', marginLeft: 10, marginBottom: 10 },
   addButtonText: { color: '#FFF', fontSize: 24, fontWeight: 'bold' },
   addBtnSmall: { backgroundColor: '#1565C0', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
   addBtnSmallText: { color: '#FFF', fontWeight: 'bold', fontSize: 12 },
@@ -310,19 +321,22 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, paddingVertical: 10, fontSize: 14, color: '#333' },
   listItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#EEE' },
   listItemText: { fontSize: 16, color: '#333', flex: 1 },
+  listItemSub: { fontSize: 12, color: '#888', marginTop: 2 },
   iconText: { fontSize: 18 },
-  
+  label: { fontSize: 12, fontWeight: 'bold', color: '#333', marginBottom: 5 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalBox: { backgroundColor: '#FFF', width: '90%', padding: 20, borderRadius: 12, elevation: 5 },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#333', marginBottom: 15 },
-  materialRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  label: { fontSize: 12, fontWeight: 'bold', color: '#333', marginBottom: 5 },
-  selectInput: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F5F5F5', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, padding: 12, height: 48 },
+  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#333', marginBottom: 5, textAlign: 'center' },
+  modalSub: { fontSize: 12, color: '#666', marginBottom: 15, textAlign: 'center' },
+  materialRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 10 },
+  selectInput: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F5F5F5', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, padding: 12, height: 45 },
   selectText: { fontSize: 15, color: '#333' },
   arrow: { fontSize: 12, color: '#999' },
+  deleteMaterialBtn: { padding: 12, backgroundColor: '#FFEBEE', borderRadius: 8, marginLeft: 5, height: 45, justifyContent: 'center' },
+  deleteText: { fontSize: 16, color: '#D32F2F', fontWeight: 'bold' },
   addMaterialBtn: { padding: 12, alignItems: 'center', borderWidth: 1, borderColor: '#1565C0', borderStyle: 'dashed', borderRadius: 8, marginBottom: 20 },
   addMaterialText: { color: '#1565C0', fontWeight: 'bold' },
-  modalButtons: { flexDirection: 'row', justifyContent: 'flex-end' },
+  modalButtons: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10 },
   cancelButton: { padding: 10, marginRight: 10 },
   cancelText: { color: '#666', fontWeight: 'bold', fontSize: 16 },
   saveButton: { backgroundColor: '#1B4D21', padding: 10, paddingHorizontal: 20, borderRadius: 8 },
