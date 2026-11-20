@@ -1,55 +1,87 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch, ActivityIndicator, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useState, useEffect } from 'react';
 import { supabase } from '../../conexion/supabase';
+import { obtenerIdHotel } from '../../conexion/sesion';
 
 const ALERTAS_PREDEFINIDAS = [
-  { id: 'r1', icono: '💧', titulo: 'Alto consumo hídrico', descripcion: 'Se activa si una prenda contiene más de un 40% de fibras sintéticas. Requieren lavados a mayor temperatura y liberan microplásticos.', tipo: 'ambiental' },
-  { id: 'r2', icono: '🛑', titulo: 'Límite de vida útil (Reemplazo)', descripcion: 'Se activa cuando un textil supera los 200 ciclos de lavado. La tela pierde propiedades de absorción y suavidad.', tipo: 'calidad' },
-  { id: 'r3', icono: '⏱️', titulo: 'Retraso Crítico en Lavandería', descripcion: 'Se activa si una prenda lleva más de 48 horas en lavandería sin ser procesada.', tipo: 'operativo' },
-  { id: 'r4', icono: '♻️', titulo: 'Fin de ciclo (Donación/Reciclaje)', descripcion: 'Sugiere rutas de donación o reciclaje textil cuando una prenda llega a su límite de vida útil.', tipo: 'ambiental' },
+  { id: 'r1', icono: '💧', titulo: 'Alto consumo hídrico', descripcion: 'Se activa si una prenda contiene más de un 40% de fibras sintéticas.', tipo: 'ambiental' },
+  { id: 'r2', icono: '🛑', titulo: 'Límite de vida útil (Reemplazo)', descripcion: 'Se activa cuando un textil supera los 200 ciclos de lavado.', tipo: 'calidad' },
+  { id: 'r3', icono: '⏱️', titulo: 'Retraso Crítico en Lavandería', descripcion: 'Se activa si una prenda lleva más de 48 horas en lavandería.', tipo: 'operativo' },
+  { id: 'r4', icono: '♻️', titulo: 'Fin de ciclo (Donación/Reciclaje)', descripcion: 'Sugiere rutas de donación o reciclaje textil.', tipo: 'ambiental' },
 ];
 
 export default function GestionAlertas() {
   const router = useRouter();
   const [reglas, setReglas] = useState<any[]>([]);
   const [cargando, setCargando] = useState(true);
+  const [idHotelActual, setIdHotelActual] = useState<string | null>(null);
 
-  // 1. Cargar estado real desde Supabase al entrar
   useEffect(() => {
     cargarAlertas();
   }, []);
 
   const cargarAlertas = async () => {
     setCargando(true);
-    const { data, error } = await supabase.from('configuracion_alertas').select('*');
-    
-    if (!error && data) {
-      // Cruzamos los datos de la BD con los textos visuales
-      const alertasMapeadas = ALERTAS_PREDEFINIDAS.map(alerta => {
-        const dbItem = data.find(d => d.id === alerta.id);
-        return { ...alerta, activa: dbItem ? dbItem.activa : false };
-      });
-      setReglas(alertasMapeadas);
+    const idHotel = await obtenerIdHotel();
+    setIdHotelActual(idHotel);
+
+    if (!idHotel) {
+      setCargando(false);
+      return;
     }
+
+    const { data, error } = await supabase
+      .from('configuracion_alertas')
+      .select('*')
+      .eq('id_hotel', idHotel);
+    
+    if (error) {
+      console.error("Error cargando alertas:", error);
+      setCargando(false);
+      return;
+    }
+
+    // Mapeamos con los datos de la BD
+    const alertasMapeadas = ALERTAS_PREDEFINIDAS.map(alerta => {
+      const dbItem = data?.find(d => d.id === alerta.id);
+      return { ...alerta, activa: dbItem ? dbItem.activa : false };
+    });
+    
+    setReglas(alertasMapeadas);
     setCargando(false);
   };
 
-  // 2. Función real para activar/desactivar en la nube
   const toggleRegla = async (id: string, estadoActual: boolean) => {
-    // Actualizamos la interfaz inmediatamente para que sea fluido
-    setReglas(reglas.map(r => r.id === id ? { ...r, activa: !estadoActual } : r));
+    if (!idHotelActual) return;
 
-    // Guardamos en la base de datos
-    const { error } = await supabase
-      .from('configuracion_alertas')
-      .update({ activa: !estadoActual })
-      .eq('id', id);
+    // 1. Actualizamos visualmente para que el switch responda rápido
+    setReglas(prev => prev.map(r => r.id === id ? { ...r, activa: !estadoActual } : r));
 
-    if (error) {
-      console.error("Error al actualizar:", error);
-      // Si falla, revertimos el cambio visual
-      setReglas(reglas.map(r => r.id === id ? { ...r, activa: estadoActual } : r));
+    try {
+      // 2. Hacemos el UPDATE y pedimos que nos devuelva la fila modificada (.select())
+      const { data, error } = await supabase
+        .from('configuracion_alertas')
+        .update({ activa: !estadoActual })
+        .eq('id', id)
+        .eq('id_hotel', idHotelActual)
+        .select(); 
+
+      if (error) throw error;
+
+      // 3. Si no devuelve datos, es porque RLS bloqueó la modificación
+      if (!data || data.length === 0) {
+        throw new Error("No se pudo modificar la alerta. Verifica los permisos en Supabase.");
+      }
+
+      console.log(`✅ Alerta ${id} actualizada a: ${!estadoActual}`);
+
+    } catch (error: any) {
+      console.error("Error al actualizar alerta:", error.message);
+      Alert.alert("Error de Guardado", "No se pudo guardar el cambio en la nube. Revisa las políticas RLS de Supabase.");
+      
+      // Revertimos el cambio visual si falla
+      setReglas(prev => prev.map(r => r.id === id ? { ...r, activa: estadoActual } : r));
     }
   };
 

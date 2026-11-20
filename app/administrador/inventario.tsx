@@ -1,39 +1,50 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, TextInput, ActivityIndicator, FlatList } from 'react-native';
-import { useRouter } from 'expo-router';
-import { useState, useEffect } from 'react';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { useState, useEffect, useCallback } from 'react';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy'; 
 import * as XLSX from 'xlsx';
 import { supabase } from '../../conexion/supabase';
+import { obtenerIdHotel } from '../../conexion/sesion'; // IMPORTANTE
 
 export default function Inventario() {
   const router = useRouter();
   
-  // Estados principales
   const [inventario, setInventario] = useState<any[]>([]);
   const [cargando, setCargando] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Estados para configuración de Stock (Modal)
   const [modalStockVisible, setModalStockVisible] = useState(false);
   const [itemEditando, setItemEditando] = useState<any>(null);
   const [nuevoStockStr, setNuevoStockStr] = useState('');
 
-  // --- 1. CARGAR INVENTARIO DESDE SUPABASE ---
-  useEffect(() => {
-    cargarInventario();
-  }, []);
+  // Recargar datos cada vez que se entra a la pantalla
+  useFocusEffect(
+    useCallback(() => {
+      cargarInventario();
+    }, [])
+  );
 
   const cargarInventario = async () => {
     setCargando(true);
-    // Traemos todos los artículos de la base de datos
-    const { data, error } = await supabase.from('articulos').select('*');
+    const idHotel = await obtenerIdHotel(); // <-- Obtenemos el ID del hotel
+
+    if (!idHotel) {
+      setCargando(false);
+      return;
+    }
+
+    // Filtramos los artículos SOLO de este hotel
+    const { data, error } = await supabase
+      .from('articulos')
+      .select('*')
+      .eq('id_hotel', idHotel); 
     
     if (error) {
       Alert.alert("Error", error.message);
     } else if (data) {
-      // Como en Supabase cada fila es UNA prenda, agrupamos por tipo_prenda para el conteo
+      // Agrupamos por tipo de prenda para el conteo
       const agrupado = data.reduce((acc: any, item: any) => {
         const tipo = item.tipo_prenda || 'Sin tipo';
         if (!acc[tipo]) {
@@ -55,7 +66,7 @@ export default function Inventario() {
 
   const totalPrendas = inventario.reduce((acc, item) => acc + item.cantidad, 0);
 
-  // --- 2. CONFIGURAR STOCK MÍNIMO ---
+  // --- CONFIGURAR STOCK MÍNIMO ---
   const abrirConfiguracionStock = (item: any) => {
     setItemEditando(item);
     setNuevoStockStr(item.stockMinimo.toString());
@@ -69,16 +80,14 @@ export default function Inventario() {
       return;
     }
     
-    // Actualizamos el estado local
     setInventario(inventario.map(item => 
       item.tipo === itemEditando.tipo ? { ...item, stockMinimo: valor } : item
     ));
     setModalStockVisible(false);
     Alert.alert("Guardado", "Stock mínimo actualizado para el reporte.");
-    // Nota: Para guardar esto en la nube, se necesitaría una tabla extra de "configuraciones".
   };
 
-  // --- 3. EXPORTACIONES ---
+  // --- EXPORTACIONES ---
   const generarPDF = async () => {
     try {
       const html = `
@@ -149,7 +158,6 @@ export default function Inventario() {
   return (
     <View style={styles.container}>
       
-      {/* MODAL CONFIGURAR STOCK MÍNIMO */}
       <Modal visible={modalStockVisible} transparent={true} animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
@@ -174,7 +182,6 @@ export default function Inventario() {
         </View>
       </Modal>
 
-      {/* INTERFAZ PRINCIPAL */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.push('/administrador/dashboard')} style={styles.backButton}>
           <Text style={styles.backText}>← Volver al Panel</Text>
@@ -229,12 +236,11 @@ export default function Inventario() {
             );
           }}
           ListEmptyComponent={
-            <Text style={styles.emptyText}>No hay prendas en el inventario.</Text>
+            <Text style={styles.emptyText}>No hay prendas registradas en este hotel.</Text>
           }
         />
       )}
 
-      {/* BOTONES DE EXPORTACIÓN */}
       <View style={styles.exportButtonsRow}>
         <TouchableOpacity style={[styles.exportButton, { backgroundColor: '#FFEBEE' }]} onPress={generarPDF}>
           <Text style={[styles.exportText, { color: '#D32F2F' }]}>📄 Exportar PDF</Text>

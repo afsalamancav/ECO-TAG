@@ -8,19 +8,18 @@ export default function HistorialPrenda() {
   const router = useRouter();
   const { id } = useLocalSearchParams(); 
 
+  // Estados de la pantalla
   const [prendas, setPrendas] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [cargando, setCargando] = useState(true);
-
-  // Estados para el Escaneo NFC
   const [isScanning, setIsScanning] = useState(false);
 
-  // Estados para la prenda seleccionada
+  // Estados de la prenda seleccionada
   const [prendaSeleccionada, setPrendaSeleccionada] = useState<any>(null);
   const [eventos, setEventos] = useState<any[]>([]);
   const [cargandoDetalles, setCargandoDetalles] = useState(false);
-
-  // Modales
+  
+  // Estados de los Modales
   const [modalDetallesVisible, setModalDetallesVisible] = useState(false);
   const [modalEstadoVisible, setModalEstadoVisible] = useState(false);
 
@@ -31,7 +30,6 @@ export default function HistorialPrenda() {
     }
   }, [id]);
 
-  // 1. CARGAR TODAS LAS PRENDAS
   const cargarPrendas = async () => {
     setCargando(true);
     const { data } = await supabase.from('articulos').select('*').order('created_at', { ascending: false });
@@ -39,7 +37,6 @@ export default function HistorialPrenda() {
     setCargando(false);
   };
 
-  // 2. BUSCAR Y ABRIR DETALLES (Cuando se escanea o se busca un ID específico)
   const buscarYSeleccionar = async (uid: string) => {
     setCargandoDetalles(true);
     const { data: prendaData, error } = await supabase
@@ -56,7 +53,6 @@ export default function HistorialPrenda() {
 
     setPrendaSeleccionada(prendaData);
     
-    // Traer historial
     const { data: historialData } = await supabase
       .from('historial')
       .select('*')
@@ -68,7 +64,6 @@ export default function HistorialPrenda() {
     setModalDetallesVisible(true);
   };
 
-  // 3. LÓGICA DE ESCANEO
   const escanearNFC = async () => {
     setIsScanning(true);
     try {
@@ -85,25 +80,37 @@ export default function HistorialPrenda() {
     }
   };
 
-  // 4. CAMBIAR ESTADO
   const cambiarEstado = async (nuevoEstado: string) => {
     if (!prendaSeleccionada) return;
 
-    const { error } = await supabase.from('articulos').update({ estado: nuevoEstado }).eq('id', prendaSeleccionada.id);
+    // Si eligen Lavandería, guardamos En Tránsito para el flujo logístico
+    const estadoFinal = nuevoEstado === 'Lavandería' ? 'En Tránsito' : nuevoEstado;
 
-    if (error) Alert.alert("Error", error.message);
-    else {
+    const { error } = await supabase.from('articulos').update({ estado: estadoFinal }).eq('id', prendaSeleccionada.id);
+
+    if (error) {
+      Alert.alert("Error", error.message);
+    } else {
+      // Si pasa a Disponible, En Tránsito o Perdida, liberamos la habitación
+      if (estadoFinal === 'Disponible' || estadoFinal === 'En Tránsito' || estadoFinal === 'Perdida') {
+        await supabase.from('asignaciones')
+          .update({ activa: false, fecha_liberacion: new Date().toISOString() })
+          .eq('id_articulo', prendaSeleccionada.id)
+          .eq('activa', true);
+      }
+
+      // Guardamos en el historial
       await supabase.from('historial').insert([
-        { id_articulo: prendaSeleccionada.id, evento: 'Cambio manual de estado', detalle: `El administrador cambió el estado a: ${nuevoEstado}` }
+        { id_articulo: prendaSeleccionada.id, evento: 'Cambio manual de estado', detalle: `El administrador cambió el estado a: ${estadoFinal}` }
       ]);
+      
       setModalEstadoVisible(false);
       setModalDetallesVisible(false);
-      buscarYSeleccionar(prendaSeleccionada.nfc_uid); // Recargar detalles
-      cargarPrendas(); // Recargar la lista general
+      buscarYSeleccionar(prendaSeleccionada.nfc_uid); 
+      cargarPrendas();
     }
   };
 
-  // Filtro para la lista general
   const prendasFiltradas = prendas.filter(p => 
     p.tipo_prenda.toLowerCase().includes(searchQuery.toLowerCase()) || 
     p.nfc_uid.toLowerCase().includes(searchQuery.toLowerCase())
@@ -112,18 +119,20 @@ export default function HistorialPrenda() {
   return (
     <View style={styles.container}>
       
-      {/* PANTALLA DE ESCANEANDO */}
+      {/* MODAL DE ESCANEANDO */}
       <Modal visible={isScanning} transparent={true} animationType="fade">
-        <View style={styles.scanningOverlay}>
+        <View style={styles.modalOverlayCenter}>
           <View style={styles.scanningBox}>
             <ActivityIndicator size="large" color="#1B4D21" />
             <Text style={styles.scanningTitle}>Escaneando Chip NFC...</Text>
-            <Text style={styles.scanningText}>
-              1. Retira la funda del celular.{"\n"}
-              2. Acerca el chip a la parte trasera (centro superior).{"\n"}
-              3. Mantenlo pegado hasta que vibre.
-            </Text>
-            <TouchableOpacity style={styles.cancelScanBtn} onPress={() => { NfcManager.cancelTechnologyRequest(); setIsScanning(false); }}>
+            <Text style={styles.scanningText}>Acerca el chip a la parte trasera del celular.</Text>
+            <TouchableOpacity 
+              style={styles.cancelScanBtn} 
+              onPress={() => { 
+                NfcManager.cancelTechnologyRequest(); 
+                setIsScanning(false); 
+              }}
+            >
               <Text style={styles.cancelScanText}>Cancelar</Text>
             </TouchableOpacity>
           </View>
@@ -132,7 +141,7 @@ export default function HistorialPrenda() {
 
       {/* MODAL DE DETALLES Y HISTORIAL */}
       <Modal visible={modalDetallesVisible} transparent={true} animationType="slide">
-        <View style={styles.modalOverlay}>
+        <View style={styles.modalOverlayCenter}>
           <View style={styles.modalDetallesBox}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Detalle del Textil</Text>
@@ -149,7 +158,7 @@ export default function HistorialPrenda() {
                   <View style={styles.cardHeader}>
                     <Text style={styles.prendaId}>{prendaSeleccionada?.nfc_uid}</Text>
                     <TouchableOpacity 
-                      style={[styles.badge, prendaSeleccionada?.estado === 'Lavandería' ? styles.badgeWarning : prendaSeleccionada?.estado === 'Perdida' ? styles.badgeDanger : styles.badgeOk]}
+                      style={[styles.badge, prendaSeleccionada?.estado === 'Lavandería' || prendaSeleccionada?.estado === 'En Tránsito' ? styles.badgeWarning : prendaSeleccionada?.estado === 'Perdida' ? styles.badgeDanger : styles.badgeOk]}
                       onPress={() => setModalEstadoVisible(true)}
                     >
                       <Text style={styles.badgeText}>{prendaSeleccionada?.estado} ✎</Text>
@@ -168,7 +177,6 @@ export default function HistorialPrenda() {
                 </View>
 
                 <Text style={styles.sectionTitle}>Historial de Eventos ({eventos.length})</Text>
-                
                 {eventos.length === 0 ? (
                   <Text style={styles.emptyText}>No hay eventos registrados.</Text>
                 ) : (
@@ -176,7 +184,7 @@ export default function HistorialPrenda() {
                     <View key={evento.id} style={styles.timelineItem}>
                       <View style={styles.timelineDot} />
                       <View style={styles.timelineContent}>
-                        <Text style={styles.timelineDate}>{new Date(evento.fecha).toLocaleDateString('es-CO')}</Text>
+                        <Text style={styles.timelineDate}>{new Date(evento.fecha).toLocaleDateString('es-CO')} - {new Date(evento.fecha).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}</Text>
                         <Text style={styles.timelineTitle}>{evento.evento}</Text>
                         <Text style={styles.timelineDetail}>{evento.detalle}</Text>
                       </View>
@@ -189,20 +197,35 @@ export default function HistorialPrenda() {
         </View>
       </Modal>
 
-      {/* MODAL CAMBIAR ESTADO */}
+      {/* MODAL PARA CAMBIAR EL ESTADO */}
       <Modal visible={modalEstadoVisible} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
+        <View style={styles.modalOverlayCenter}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Cambiar Estado</Text>
-            <TouchableOpacity style={styles.stateOption} onPress={() => cambiarEstado('Disponible')}><Text style={styles.stateIcon}>📦</Text><Text style={styles.stateText}>Disponible (En Almacén)</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.stateOption} onPress={() => cambiarEstado('Lavandería')}><Text style={styles.stateIcon}>🧺</Text><Text style={styles.stateText}>En Lavandería</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.stateOption, { borderColor: '#F44336', borderWidth: 1 }]} onPress={() => cambiarEstado('Perdida')}><Text style={styles.stateIcon}>❓</Text><Text style={[styles.stateText, { color: '#F44336' }]}>Reportada como Perdida</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.cancelButton} onPress={() => setModalEstadoVisible(false)}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity>
+            
+            <TouchableOpacity style={styles.stateOption} onPress={() => cambiarEstado('Disponible')}>
+              <Text style={styles.stateIcon}>📦</Text>
+              <Text style={styles.stateText}>Disponible (En Almacén)</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.stateOption} onPress={() => cambiarEstado('Lavandería')}>
+              <Text style={styles.stateIcon}>🧺</Text>
+              <Text style={styles.stateText}>Enviar a Lavandería</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={[styles.stateOption, { borderColor: '#F44336', borderWidth: 1 }]} onPress={() => cambiarEstado('Perdida')}>
+              <Text style={styles.stateIcon}>❓</Text>
+              <Text style={[styles.stateText, { color: '#F44336' }]}>Reportar como Perdida</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.cancelButton} onPress={() => setModalEstadoVisible(false)}>
+              <Text style={styles.cancelText}>Cancelar</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      {/* INTERFAZ PRINCIPAL (LISTA Y BUSCADOR) */}
+      {/* INTERFAZ PRINCIPAL */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.push('/administrador/dashboard')} style={styles.backButton}>
           <Text style={styles.backText}>← Volver</Text>
@@ -240,7 +263,7 @@ export default function HistorialPrenda() {
                 <Text style={styles.cardNombre}>{item.tipo_prenda}</Text>
               </View>
               <View style={styles.cardRight}>
-                <View style={[styles.statusBadge, item.estado === 'Lavandería' ? styles.badgeWarning : item.estado === 'Perdida' ? styles.badgeDanger : styles.badgeOk]}>
+                <View style={[styles.statusBadge, item.estado === 'Lavandería' || item.estado === 'En Tránsito' ? styles.badgeWarning : item.estado === 'Perdida' ? styles.badgeDanger : styles.badgeOk]}>
                   <Text style={styles.badgeText}>{item.estado}</Text>
                 </View>
                 <Text style={styles.arrow}>›</Text>
@@ -252,7 +275,6 @@ export default function HistorialPrenda() {
           }
         />
       )}
-
     </View>
   );
 }
@@ -285,14 +307,14 @@ const styles = StyleSheet.create({
   badgeText: { fontSize: 11, fontWeight: 'bold', color: '#333' },
   arrow: { fontSize: 24, color: '#CCC', fontWeight: 'bold' },
 
-  scanningOverlay: { flex: 1, backgroundColor: 'rgba(27, 77, 33, 0.95)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  scanningBox: { backgroundColor: '#FFF', width: '100%', padding: 30, borderRadius: 20, alignItems: 'center' },
-  scanningTitle: { fontSize: 22, fontWeight: 'bold', color: '#1B4D21', marginTop: 20, marginBottom: 15 },
-  scanningText: { fontSize: 15, color: '#444', textAlign: 'center', lineHeight: 24, marginBottom: 25 },
+  modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
+  
+  scanningBox: { backgroundColor: '#FFF', width: '85%', padding: 30, borderRadius: 20, alignItems: 'center' },
+  scanningTitle: { fontSize: 22, fontWeight: 'bold', color: '#1B4D21', marginTop: 20, marginBottom: 10 },
+  scanningText: { fontSize: 15, color: '#444', textAlign: 'center', marginBottom: 25 },
   cancelScanBtn: { padding: 15, backgroundColor: '#FFEBEE', borderRadius: 10, width: '100%', alignItems: 'center' },
   cancelScanText: { color: '#D32F2F', fontWeight: 'bold', fontSize: 16 },
 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
   modalDetallesBox: { backgroundColor: '#FFF', width: '90%', height: '80%', borderRadius: 20, padding: 20 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
   modalTitle: { fontSize: 22, fontWeight: 'bold', color: '#333' },

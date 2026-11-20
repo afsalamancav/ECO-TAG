@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import NfcManager, { NfcTech } from 'react-native-nfc-manager';
 import { supabase } from '../../conexion/supabase';
+import { obtenerIdHotel } from '../../conexion/sesion'; 
 
 export default function Hotel() {
   const router = useRouter();
@@ -16,16 +17,21 @@ export default function Hotel() {
   const [prendasHabitacion, setPrendasHabitacion] = useState<any[]>([]);
   const [cargando, setCargando] = useState(false);
 
+  // Modales
   const [modalNFCVisible, setModalNFCVisible] = useState(false);
   const [prendaEscaneada, setPrendaEscaneada] = useState<any>(null);
   const [modalEstadoVisible, setModalEstadoVisible] = useState(false);
   const [prendaAEditar, setPrendaAEditar] = useState<any>(null);
+
+  // NUEVO: Estado para saber si escaneamos para reportar una novedad
+  const [escaneandoParaReportar, setEscaneandoParaReportar] = useState(false);
 
   useEffect(() => {
     NfcManager.start();
     return () => { NfcManager.cancelTechnologyRequest().catch(() => 0); };
   }, []);
 
+  // --- 1. ESCANEAR QR ---
   const abrirEscanerQR = async () => {
     if (!permission?.granted) {
       const { granted } = await requestPermission();
@@ -39,10 +45,17 @@ export default function Hotel() {
     const numHab = data.includes('/') ? data.split('/').pop() : data;
 
     setCargando(true);
-    const { data: habData, error } = await supabase.from('habitaciones').select('*').eq('numero_habitacion', numHab).single();
+    const idHotel = await obtenerIdHotel(); 
+
+    const { data: habData, error } = await supabase
+      .from('habitaciones')
+      .select('*')
+      .eq('numero_habitacion', numHab)
+      .eq('id_hotel', idHotel) 
+      .single();
 
     if (error || !habData) {
-      Alert.alert("Error", "Esta habitación no está registrada.");
+      Alert.alert("Error", "Esta habitación no está registrada en tu hotel.");
       setCargando(false);
       return;
     }
@@ -57,7 +70,7 @@ export default function Hotel() {
       .from('asignaciones')
       .select(`id, articulos (id, nfc_uid, tipo_prenda, estado)`)
       .eq('id_habitacion', idHabitacion)
-      .eq('activa', true);
+      .eq('activa', true); 
 
     if (!error && data) {
       const formateadas = data.map((a: any) => ({
@@ -71,23 +84,46 @@ export default function Hotel() {
     }
   };
 
-  const abrirEscanerNFC = async () => {
+  // --- 2. ESCANEAR NFC (Lógica dual: Asignar o Reportar) ---
+  const abrirEscanerNFC = async (paraReportar: boolean = false) => {
+    setEscaneandoParaReportar(paraReportar);
     setIsScanningNFC(true);
+    const idHotel = await obtenerIdHotel();
+    
     try {
       await NfcManager.requestTechnology(NfcTech.Ndef);
       const tag = await NfcManager.getTag();
       
       if (tag && tag.id) {
         const idEscaneado = tag.id.toUpperCase();
-        const { data: prendaData, error } = await supabase.from('articulos').select('*').eq('nfc_uid', idEscaneado).single();
-
-        if (error || !prendaData) {
-          Alert.alert("No encontrada", "Este chip no está registrado en el sistema.");
-        } else if (prendaData.estado !== 'Disponible') {
-          Alert.alert("Atención", `Esta prenda está en estado: ${prendaData.estado}`);
+        
+        if (paraReportar) {
+          // Lógica para REPORTAR: Buscar en la lista local de la habitación
+          const prendaEncontrada = prendasHabitacion.find(p => p.nfc_uid === idEscaneado);
+          
+          if (prendaEncontrada) {
+            setPrendaAEditar(prendaEncontrada);
+            setModalEstadoVisible(true);
+          } else {
+            Alert.alert("No encontrada", "Esta prenda no pertenece al inventario activo de esta habitación.");
+          }
         } else {
-          setPrendaEscaneada(prendaData);
-          setModalNFCVisible(true);
+          // Lógica para ASIGNAR: Buscar en la base de datos global de este hotel
+          const { data: prendaData, error } = await supabase
+            .from('articulos')
+            .select('*')
+            .eq('nfc_uid', idEscaneado)
+            .eq('id_hotel', idHotel) 
+            .single();
+
+          if (error || !prendaData) {
+            Alert.alert("No encontrada", "Este chip no está registrado en tu hotel.");
+          } else if (prendaData.estado !== 'Disponible') {
+            Alert.alert("Atención", `Esta prenda está en estado: ${prendaData.estado}`);
+          } else {
+            setPrendaEscaneada(prendaData);
+            setModalNFCVisible(true);
+          }
         }
       }
     } catch (ex) {
@@ -95,48 +131,74 @@ export default function Hotel() {
     } finally {
       NfcManager.cancelTechnologyRequest().catch(() => 0);
       setIsScanningNFC(false);
+      setEscaneandoParaReportar(false);
     }
   };
 
   const confirmarAccionNFC = async (accion: 'Asignar' | 'Lavanderia') => {
     if (!prendaEscaneada || !habitacion) return;
+    const idHotel = await obtenerIdHotel();
 
     if (accion === 'Asignar') {
-      const { error: errorAsignacion } = await supabase.from('asignaciones').insert([{ id_articulo: prendaEscaneada.id, id_habitacion: habitacion.id, activa: true }]);
+      const { error: errorAsignacion } = await supabase.from('asignaciones').insert([
+        { id_articulo: prendaEscaneada.id, id_habitacion: habitacion.id, activa: true, id_hotel: idHotel } 
+      ]);
+
       const { error: errorArticulo } = await supabase.from('articulos').update({ estado: 'Asignada' }).eq('id', prendaEscaneada.id);
 
-      if (errorAsignacion || errorArticulo) Alert.alert("Error", "No se pudo asignar.");
-      else {
+      if (errorAsignacion || errorArticulo) {
+        Alert.alert("Error", "No se pudo asignar.");
+      } else {
+        await supabase.from('historial').insert([{ 
+          id_articulo: prendaEscaneada.id, 
+          evento: 'Asignación a Habitación', 
+          detalle: `Asignada a la Habitación ${habitacion.numero_habitacion}`,
+          id_hotel: idHotel 
+        }]);
+
         Alert.alert("✅ Asignada", `${prendaEscaneada.tipo_prenda} añadida a la habitación.`);
         cargarPrendasHabitacion(habitacion.id);
       }
     } else {
-      // CAMBIO CLAVE: Enviar a En Tránsito desde el hotel
       const { error } = await supabase.from('articulos').update({ estado: 'En Tránsito' }).eq('id', prendaEscaneada.id);
-      if (error) Alert.alert("Error", "No se pudo enviar.");
-      else Alert.alert("🚚 En Tránsito", `${prendaEscaneada.tipo_prenda} en camino a lavandería.`);
+      
+      if (error) {
+        Alert.alert("Error", "No se pudo enviar.");
+      } else {
+        await supabase.from('historial').insert([{ 
+          id_articulo: prendaEscaneada.id, 
+          evento: 'Envío a Lavandería', 
+          detalle: `Sale de la Habitación ${habitacion.numero_habitacion} hacia lavandería.`,
+          id_hotel: idHotel 
+        }]);
+
+        Alert.alert("🚚 En Tránsito", `${prendaEscaneada.tipo_prenda} en camino a lavandería.`);
+      }
     }
     setModalNFCVisible(false);
     setPrendaEscaneada(null);
   };
 
-  const abrirModalEstado = (prenda: any) => {
-    setPrendaAEditar(prenda);
-    setModalEstadoVisible(true);
-  };
-
+  // --- 3. REPORTAR ESTADO (Lavandería/Pérdida) ---
   const cambiarEstadoPrenda = async (nuevoEstado: string) => {
     if (!prendaAEditar) return;
-
-    // CAMBIO CLAVE: Si reporta "Lavandería", se guarda como "En Tránsito"
+    const idHotel = await obtenerIdHotel();
     const estadoFinal = nuevoEstado === 'Lavandería' ? 'En Tránsito' : nuevoEstado;
 
     const { error: errorArt } = await supabase.from('articulos').update({ estado: estadoFinal }).eq('id', prendaAEditar.id);
     const { error: errorAsig } = await supabase.from('asignaciones').update({ activa: false, fecha_liberacion: new Date().toISOString() }).eq('id', prendaAEditar.asignacion_id);
 
-    if (errorArt || errorAsig) Alert.alert("Error", "No se pudo actualizar el estado.");
-    else {
-      Alert.alert("✅ Actualizado", `La prenda va en tránsito hacia la lavandería.`);
+    if (errorArt || errorAsig) {
+      Alert.alert("Error", "No se pudo actualizar el estado.");
+    } else {
+      await supabase.from('historial').insert([{ 
+        id_articulo: prendaAEditar.id, 
+        evento: nuevoEstado === 'Lavandería' ? 'Reporte de Limpieza' : 'Reporte de Pérdida', 
+        detalle: `El personal de hotel reportó la prenda como: ${nuevoEstado}`,
+        id_hotel: idHotel 
+      }]);
+
+      Alert.alert("✅ Actualizado", `La prenda ha sido reportada.`);
       cargarPrendasHabitacion(habitacion.id);
       setModalEstadoVisible(false);
     }
@@ -150,11 +212,7 @@ export default function Hotel() {
   if (isScanningQR) {
     return (
       <View style={styles.cameraContainer}>
-        <CameraView
-          style={StyleSheet.absoluteFill}
-          barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-          onBarcodeScanned={onBarcodeScanned}
-        />
+        <CameraView style={StyleSheet.absoluteFill} barcodeScannerSettings={{ barcodeTypes: ['qr'] }} onBarcodeScanned={onBarcodeScanned} />
         <View style={styles.cameraOverlay}>
           <Text style={styles.cameraText}>Apunta al código QR de la puerta</Text>
           <TouchableOpacity style={styles.cancelCameraBtn} onPress={() => setIsScanningQR(false)}>
@@ -167,12 +225,15 @@ export default function Hotel() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      
       {/* MODAL ESCANEANDO NFC */}
       <Modal visible={isScanningNFC} transparent={true} animationType="fade">
         <View style={styles.modalOverlayCenter}>
           <View style={styles.scanningBox}>
             <ActivityIndicator size="large" color="#1565C0" />
-            <Text style={styles.scanningTitle}>Buscando Chip NFC...</Text>
+            <Text style={styles.scanningTitle}>
+              {escaneandoParaReportar ? 'Escaneando para Reportar...' : 'Buscando Chip NFC...'}
+            </Text>
             <Text style={styles.scanningText}>Acerca el chip a la parte trasera del celular.</Text>
             <TouchableOpacity style={styles.cancelScanBtn} onPress={() => { NfcManager.cancelTechnologyRequest(); setIsScanningNFC(false); }}>
               <Text style={styles.cancelScanText}>Cancelar</Text>
@@ -181,7 +242,7 @@ export default function Hotel() {
         </View>
       </Modal>
 
-      {/* MODAL ACCIÓN TRAS ESCANEAR NFC */}
+      {/* MODAL ACCIÓN TRAS ESCANEAR NFC (ASIGNAR) */}
       <Modal visible={modalNFCVisible} transparent={true} animationType="fade">
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalBox}>
@@ -210,7 +271,7 @@ export default function Hotel() {
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Reportar Novedad</Text>
-            <Text style={styles.modalSub}>¿Qué pasó con {prendaAEditar?.tipo}?</Text>
+            <Text style={styles.modalSub}>¿Qué pasó con la prenda <Text style={{fontWeight: 'bold'}}>{prendaAEditar?.nfc_uid}</Text> ({prendaAEditar?.tipo})?</Text>
             
             <TouchableOpacity style={styles.stateButton} onPress={() => cambiarEstadoPrenda('Lavandería')}>
               <Text style={styles.stateIcon}>🧺</Text>
@@ -273,19 +334,23 @@ export default function Hotel() {
                 </View>
               </View>
               <Text style={styles.prendaName}>{prenda.tipo}</Text>
-              {prenda.estado === 'Asignada' && (
-                <TouchableOpacity style={styles.reportButton} onPress={() => abrirModalEstado(prenda)}>
-                  <Text style={styles.reportText}>⚠️ Reportar Novedad</Text>
-                </TouchableOpacity>
-              )}
             </View>
           ))}
 
-          <Text style={styles.sectionTitle}>Añadir Prendas</Text>
-          <TouchableOpacity style={styles.addNFCButton} onPress={abrirEscanerNFC}>
+          <Text style={styles.sectionTitle}>Acciones</Text>
+          
+          {/* BOTÓN PARA ESCANEAR NUEVAS PRENDAS */}
+          <TouchableOpacity style={styles.addNFCButton} onPress={() => abrirEscanerNFC(false)}>
             <Text style={styles.addNFCIcon}>📡</Text>
-            <Text style={styles.addNFCText}>Escanear Chip NFC</Text>
+            <Text style={styles.addNFCText}>Escanear NFC para Añadir</Text>
           </TouchableOpacity>
+
+          {/* NUEVO BOTÓN PARA REPORTAR UNA PRENDA ESPECÍFICA */}
+          <TouchableOpacity style={styles.reportNFCButton} onPress={() => abrirEscanerNFC(true)}>
+            <Text style={styles.reportNFCIcon}>⚠️</Text>
+            <Text style={styles.reportNFCText}>Escanear NFC para Reportar Novedad</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity style={styles.finishButton} onPress={finalizarRevision}>
             <Text style={styles.finishText}>🔓 Terminar Revisión</Text>
           </TouchableOpacity>
@@ -320,11 +385,15 @@ const styles = StyleSheet.create({
   badgeGreen: { backgroundColor: '#E8F5E9' },
   badgeOrange: { backgroundColor: '#FFF3E0' },
   estadoText: { fontSize: 11, fontWeight: 'bold', color: '#333' },
-  reportButton: { marginTop: 10, borderTopWidth: 1, borderTopColor: '#EEE', paddingTop: 10, alignItems: 'center' },
-  reportText: { color: '#FF9800', fontWeight: 'bold', fontSize: 14 },
-  addNFCButton: { backgroundColor: '#FFF', borderWidth: 2, borderColor: '#1565C0', padding: 18, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 20 },
+  
+  addNFCButton: { backgroundColor: '#FFF', borderWidth: 2, borderColor: '#1565C0', padding: 18, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 15 },
   addNFCIcon: { fontSize: 24, marginRight: 10 },
   addNFCText: { color: '#1565C0', fontSize: 18, fontWeight: 'bold' },
+
+  reportNFCButton: { backgroundColor: '#FFF', borderWidth: 2, borderColor: '#FF9800', padding: 18, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 20 },
+  reportNFCIcon: { fontSize: 24, marginRight: 10 },
+  reportNFCText: { color: '#FF9800', fontSize: 18, fontWeight: 'bold' },
+
   finishButton: { backgroundColor: '#2E7D32', padding: 18, borderRadius: 12, alignItems: 'center', elevation: 4 },
   finishText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
   modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },

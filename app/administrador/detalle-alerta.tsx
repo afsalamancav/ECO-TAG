@@ -2,6 +2,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useState, useEffect } from 'react';
 import { supabase } from '../../conexion/supabase';
+import { obtenerIdHotel } from '../../conexion/sesion'; // <-- IMPORTANTE
 
 export default function DetalleAlerta() {
   const router = useRouter();
@@ -10,33 +11,14 @@ export default function DetalleAlerta() {
   const [prendasAfectadas, setPrendasAfectadas] = useState<any[]>([]);
   const [cargando, setCargando] = useState(true);
 
-  // 1. Configuración visual de la alerta según el tipo (r1, r2, r3)
   const getConfiguracionAlerta = () => {
     switch (tipo) {
       case 'r1':
-        return {
-          titulo: 'Alto Consumo Hídrico',
-          subtitulo: 'Prendas con alto porcentaje de fibras sintéticas. Requieren lavados a mayor temperatura.',
-          icon: '💧',
-          color: '#E3F2FD',
-          borderColor: '#2196F3',
-        };
+        return { titulo: 'Alto Consumo Hídrico', subtitulo: 'Prendas con alto porcentaje de fibras sintéticas.', icon: '💧', color: '#E3F2FD', borderColor: '#2196F3' };
       case 'r2':
-        return {
-          titulo: 'Límite de Vida Útil',
-          subtitulo: 'Prendas que han superado los 200 lavados. Se recomienda retirarlas de circulación.',
-          icon: '🛑',
-          color: '#FFEBEE',
-          borderColor: '#F44336',
-        };
+        return { titulo: 'Límite de Vida Útil', subtitulo: 'Prendas que han superado los 200 lavados.', icon: '🛑', color: '#FFEBEE', borderColor: '#F44336' };
       case 'r3':
-        return {
-          titulo: 'Retraso en Lavandería',
-          subtitulo: 'Prendas que llevan demasiado tiempo en el área de lavado.',
-          icon: '⏱️',
-          color: '#FFF3E0',
-          borderColor: '#FF9800',
-        };
+        return { titulo: 'Retraso en Lavandería', subtitulo: 'Prendas con demasiado tiempo en el área de lavado.', icon: '⏱️', color: '#FFF3E0', borderColor: '#FF9800' };
       default:
         return { titulo: 'Detalle', subtitulo: '', icon: '📋', color: '#F5F5F5', borderColor: '#999' };
     }
@@ -44,24 +26,27 @@ export default function DetalleAlerta() {
 
   const info = getConfiguracionAlerta();
 
-  // 2. Consultar a Supabase según el tipo de alerta
   useEffect(() => {
     cargarPrendasAfectadas();
   }, [tipo]);
 
   const cargarPrendasAfectadas = async () => {
     setCargando(true);
-    let query = supabase.from('articulos').select('*');
+    const idHotel = await obtenerIdHotel(); // <-- Obtenemos el ID del hotel
+
+    if (!idHotel) {
+      setCargando(false);
+      return;
+    }
+
+    // Consulta BASE filtrada por el hotel actual
+    let query = supabase.from('articulos').select('*').eq('id_hotel', idHotel);
 
     if (tipo === 'r1') {
-      // Alerta Ambiental: Buscar prendas cuyo id_tipo_tela corresponda a poliéster/microfibra
-      // (Para el prototipo, si no hay un JOIN complejo, filtramos por los que tengan tela asignada)
       query = query.not('id_tipo_tela', 'is', null);
     } else if (tipo === 'r2') {
-      // Alerta de Vida Útil: Lavados > 200 o estado 'Perdida'
       query = query.or('lavados_totales.gte.200,estado.eq.Perdida');
     } else if (tipo === 'r3') {
-      // Alerta de Lavandería: Estado = Lavandería
       query = query.eq('estado', 'Lavandería');
     }
 
@@ -80,14 +65,12 @@ export default function DetalleAlerta() {
         <Text style={styles.backText}>← Volver al Panel</Text>
       </TouchableOpacity>
 
-      {/* CABECERA DE LA ALERTA */}
       <View style={[styles.headerCard, { backgroundColor: info.color, borderLeftColor: info.borderColor }]}>
         <Text style={styles.headerIcon}>{info.icon}</Text>
         <Text style={styles.headerTitle}>{info.titulo}</Text>
         <Text style={styles.headerDesc}>{info.subtitulo}</Text>
       </View>
 
-      {/* LISTA DE PRENDAS AFECTADAS */}
       <View style={styles.rowBetween}>
         <Text style={styles.sectionTitle}>Prendas Afectadas</Text>
         <View style={styles.countBadge}>
@@ -100,7 +83,7 @@ export default function DetalleAlerta() {
       ) : prendasAfectadas.length === 0 ? (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyIcon}>✅</Text>
-          <Text style={styles.emptyText}>¡Todo en orden! Ninguna prenda cumple con la condición de esta alerta.</Text>
+          <Text style={styles.emptyText}>¡Todo en orden! Ninguna prenda de tu hotel cumple con esta condición.</Text>
         </View>
       ) : (
         prendasAfectadas.map((prenda) => (

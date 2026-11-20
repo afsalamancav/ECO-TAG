@@ -1,66 +1,72 @@
-import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Modal, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Modal, Alert, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useState, useEffect } from 'react';
 import { supabase } from '../../conexion/supabase';
+import { obtenerIdHotel } from '../../conexion/sesion';
 
 const MATERIALES_BASE = ['Algodón', 'Poliéster', 'Tencel', 'Lino', 'Microfibra', 'Elastano', 'Seda', 'Bambú', 'Otro...'];
 
 export default function CatalogoTextil() {
   const router = useRouter();
-  
-  // Listas de la base de datos
   const [tiposPrenda, setTiposPrenda] = useState<any[]>([]);
   const [composiciones, setComposiciones] = useState<any[]>([]);
   const [cargando, setCargando] = useState(true);
-
+  
   // Búsquedas
   const [searchTipo, setSearchTipo] = useState('');
   const [searchComp, setSearchComp] = useState('');
-
-  // Inputs
+  
+  // Formulario Tipo de Prenda
   const [nuevoTipo, setNuevoTipo] = useState('');
   
-  // Estados para el Constructor de Composición
+  // Formulario Composición
   const [modalCompVisible, setModalCompVisible] = useState(false);
   const [materialesTemp, setMaterialesTemp] = useState([{ nombre: 'Algodón', porcentaje: '100' }]);
-  
-  // Modal para seleccionar material base
   const [modalMaterialVisible, setModalMaterialVisible] = useState(false);
   const [materialIndexEditando, setMaterialIndexEditando] = useState<number | null>(null);
 
-  // Estado para Editar
+  // Modales de Edición / Borrado
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editItemText, setEditItemText] = useState('');
-  const [editContext, setEditContext] = useState<{ tabla: string, id: string, nombreOriginal: string } | null>(null);
-
-  // Estado para Borrar
+  const [editContext, setEditContext] = useState<{ tabla: string, id: string } | null>(null);
   const [modalDeleteVisible, setModalDeleteVisible] = useState(false);
   const [itemAEliminar, setItemAEliminar] = useState<{ tabla: string, id: string, nombre: string } | null>(null);
 
   useEffect(() => { cargarDatos(); }, []);
 
+  // --- 1. CARGAR DATOS ---
   const cargarDatos = async () => {
     setCargando(true);
-    const { data: dataTipos, error: errTipos } = await supabase.from('tipos_prenda').select('*').order('nombre');
-    const { data: dataComps, error: errComps } = await supabase.from('tipos_tela').select('*').order('nombre');
+    const idHotel = await obtenerIdHotel();
+    if (!idHotel) { setCargando(false); return; }
 
-    if (errTipos) console.log("Error cargando tipos:", errTipos.message);
-    if (errComps) console.log("Error cargando telas:", errComps.message);
+    const { data: dataTipos } = await supabase.from('tipos_prenda').select('*').eq('id_hotel', idHotel).order('nombre');
+    const { data: dataComps } = await supabase.from('tipos_tela').select('*').eq('id_hotel', idHotel).order('nombre');
 
     if (dataTipos) setTiposPrenda(dataTipos);
     if (dataComps) setComposiciones(dataComps);
     setCargando(false);
   };
 
-  // --- CREAR TIPO DE PRENDA ---
+  // --- 2. CREAR TIPO DE PRENDA ---
   const agregarTipo = async () => {
     if (!nuevoTipo.trim()) return;
-    const { error } = await supabase.from('tipos_prenda').insert([{ nombre: nuevoTipo.trim() }]);
-    if (error) Alert.alert("Error", error.message);
-    else { setNuevoTipo(''); cargarDatos(); }
+    const idHotel = await obtenerIdHotel();
+    
+    const { error } = await supabase.from('tipos_prenda').insert([{ 
+      nombre: nuevoTipo.trim(), 
+      id_hotel: idHotel 
+    }]);
+
+    if (error) {
+      Alert.alert("Error", error.message);
+    } else { 
+      setNuevoTipo(''); 
+      cargarDatos(); 
+    }
   };
 
-  // --- CONSTRUCTOR DE COMPOSICIONES ---
+  // --- 3. CREAR COMPOSICIÓN ---
   const actualizarMaterial = (index: number, campo: string, valor: string) => {
     const nuevos = [...materialesTemp];
     (nuevos[index] as any)[campo] = valor;
@@ -76,95 +82,73 @@ export default function CatalogoTextil() {
   };
 
   const guardarComposicion = async () => {
-    // Validar que no haya vacíos
-    const camposVacios = materialesTemp.some(m => !m.nombre.trim() || !m.porcentaje.trim());
-    if (camposVacios) return Alert.alert("Error", "Todos los materiales deben tener nombre y porcentaje.");
+    // 1. Validaciones básicas
+    if (materialesTemp.some(m => !m.nombre.trim() || !m.porcentaje.trim())) {
+      return Alert.alert("Error", "Todos los materiales deben tener nombre y porcentaje.");
+    }
 
-    // Validar que sume 100
     const suma = materialesTemp.reduce((acc, m) => acc + (parseInt(m.porcentaje) || 0), 0);
-    if (suma !== 100) return Alert.alert("Error", `Los porcentajes suman ${suma}%. Deben sumar 100%.`);
+    if (suma !== 100) {
+      return Alert.alert("Error", `Los porcentajes suman ${suma}%. Deben sumar exactamente 100%.`);
+    }
 
-    // Crear string compuesto (ej: "50% Algodón / 50% Poliéster")
+    const idHotel = await obtenerIdHotel();
+    if (!idHotel) {
+      return Alert.alert("Error", "No se ha detectado el hotel. Reinicia la app.");
+    }
+
     const nombreCompuesto = materialesTemp.map(m => `${m.porcentaje}% ${m.nombre}`).join(' / ');
 
-    const { error } = await supabase.from('tipos_tela').insert([
-      { 
-        nombre: nombreCompuesto, 
-        impacto_ambiental: 'Medio', 
-        recomendacion: 'Lavar según instrucciones.',
-        alternativa_sostenible: 'Consultar alternativas.'
-      }
-    ]);
+    // 2. Inserción en Supabase
+    const { error } = await supabase.from('tipos_tela').insert([{ 
+      nombre: nombreCompuesto, 
+      impacto_ambiental: 'Medio', 
+      recomendacion: 'Lavar según instrucciones del fabricante.', 
+      alternativa_sostenible: 'Consultar alternativas.',
+      id_hotel: idHotel 
+    }]);
 
-    if (error) Alert.alert("Error", error.message);
-    else {
+    if (error) {
+      console.error("Error al guardar composición:", error);
+      Alert.alert("Error al guardar", error.message);
+    } else {
       setModalCompVisible(false);
       setMaterialesTemp([{ nombre: 'Algodón', porcentaje: '100' }]);
       cargarDatos();
     }
   };
 
-  // --- EDITAR ---
+  // --- 4. EDITAR Y BORRAR ---
   const abrirEdicion = (tabla: string, id: string, nombreActual: string) => {
     setEditItemText(nombreActual);
-    setEditContext({ tabla, id, nombreOriginal: nombreActual });
+    setEditContext({ tabla, id });
     setEditModalVisible(true);
   };
 
   const guardarEdicion = async () => {
     if (!editItemText.trim() || !editContext) return;
-
-    const { error } = await supabase
-      .from(editContext.tabla)
-      .update({ nombre: editItemText.trim() })
-      .eq('id', editContext.id);
-
+    const { error } = await supabase.from(editContext.tabla).update({ nombre: editItemText.trim() }).eq('id', editContext.id);
     if (error) Alert.alert("Error al editar", error.message);
-    else {
-      setEditModalVisible(false);
-      cargarDatos();
-    }
+    else { setEditModalVisible(false); cargarDatos(); }
   };
 
-  // --- BORRAR ---
   const confirmarBorrado = async () => {
     if (!itemAEliminar) return;
     const { error } = await supabase.from(itemAEliminar.tabla).delete().eq('id', itemAEliminar.id);
-    if (error) Alert.alert("No se puede borrar", "Puede que esté siendo usado en un artículo registrado.");
+    if (error) Alert.alert("No se puede borrar", "Puede estar en uso.");
     else cargarDatos();
     setModalDeleteVisible(false);
     setItemAEliminar(null);
   };
 
-  if (cargando) return <View style={styles.center}><Text>Cargando catálogo...</Text></View>;
-
   const tiposFiltrados = tiposPrenda.filter(t => t.nombre.toLowerCase().includes(searchTipo.toLowerCase()));
   const compsFiltradas = composiciones.filter(c => c.nombre.toLowerCase().includes(searchComp.toLowerCase()));
+
+  if (cargando) return <View style={styles.center}><ActivityIndicator size="large" color="#1B4D21" /></View>;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       
-      {/* MODAL EDITAR */}
-      <Modal visible={editModalVisible} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Editar {editContext?.tabla === 'tipos_prenda' ? 'Tipo de Prenda' : 'Composición'}</Text>
-            <TextInput 
-              style={styles.input} 
-              placeholder="Escribe el nuevo nombre" 
-              placeholderTextColor="#999" 
-              value={editItemText} 
-              onChangeText={setEditItemText} 
-              autoFocus 
-            />
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.cancelButton} onPress={() => setEditModalVisible(false)}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.saveButton} onPress={guardarEdicion}><Text style={styles.saveText}>Guardar</Text></TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
       {/* MODAL SELECCIONAR MATERIAL */}
       <Modal visible={modalMaterialVisible} transparent={true} animationType="slide">
         <View style={styles.modalOverlayBottom}>
@@ -190,6 +174,7 @@ export default function CatalogoTextil() {
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Nueva Composición</Text>
             <Text style={styles.modalSub}>La suma debe ser 100%.</Text>
+            
             <ScrollView style={{ maxHeight: 300, marginBottom: 15 }}>
               {materialesTemp.map((mat, index) => (
                 <View key={index} style={styles.materialRow}>
@@ -202,7 +187,14 @@ export default function CatalogoTextil() {
                   </View>
                   <View style={{ width: 70 }}>
                     <Text style={styles.label}>%</Text>
-                    <TextInput style={styles.input} keyboardType="numeric" placeholder="50" placeholderTextColor="#999" value={mat.porcentaje} onChangeText={(val) => actualizarMaterial(index, 'porcentaje', val)} />
+                    <TextInput 
+                      style={styles.input} 
+                      keyboardType="numeric" 
+                      placeholder="50" 
+                      placeholderTextColor="#999" 
+                      value={mat.porcentaje} 
+                      onChangeText={(val) => actualizarMaterial(index, 'porcentaje', val)} 
+                    />
                   </View>
                   {materialesTemp.length > 1 && (
                     <TouchableOpacity style={styles.deleteMaterialBtn} onPress={() => setMaterialesTemp(materialesTemp.filter((_, i) => i !== index))}>
@@ -212,11 +204,32 @@ export default function CatalogoTextil() {
                 </View>
               ))}
             </ScrollView>
-            <TouchableOpacity style={styles.addMaterialBtn} onPress={() => setMaterialesTemp([...materialesTemp, { nombre: '', porcentaje: '' }])}><Text style={styles.addMaterialText}>+ Añadir otro material</Text></TouchableOpacity>
+
+            <TouchableOpacity style={styles.addMaterialBtn} onPress={() => setMaterialesTemp([...materialesTemp, { nombre: '', porcentaje: '' }])}>
+              <Text style={styles.addMaterialText}>+ Añadir material</Text>
+            </TouchableOpacity>
             
             <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.cancelButton} onPress={() => setModalCompVisible(false)}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.saveButton} onPress={guardarComposicion}><Text style={styles.saveText}>Guardar</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.cancelButton} onPress={() => setModalCompVisible(false)}>
+                <Text style={styles.cancelText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.saveButton} onPress={guardarComposicion}>
+                <Text style={styles.saveText}>Guardar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL EDITAR */}
+      <Modal visible={editModalVisible} transparent={true} animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Editar</Text>
+            <TextInput style={styles.input} placeholder="Nuevo nombre" placeholderTextColor="#999" value={editItemText} onChangeText={setEditItemText} autoFocus />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={styles.cancelButton} onPress={() => setEditModalVisible(false)}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.saveButton} onPress={guardarEdicion}><Text style={styles.saveText}>Guardar</Text></TouchableOpacity>
             </View>
           </View>
         </View>

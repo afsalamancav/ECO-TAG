@@ -1,42 +1,47 @@
-import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert, Modal } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert, Modal, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useState, useEffect, useRef } from 'react';
 import QRCode from 'react-native-qrcode-svg';
 import ViewShot from 'react-native-view-shot';
 import * as Sharing from 'expo-sharing';
-// IMPORTAMOS SUPABASE
 import { supabase } from '../../conexion/supabase';
+import { obtenerIdHotel } from '../../conexion/sesion'; // IMPORTANTE
 
 export default function GestionHabitaciones() {
   const router = useRouter();
   
-  // Estados para los datos de la base de datos
   const [habitaciones, setHabitaciones] = useState<any[]>([]);
   const [cargando, setCargando] = useState(true);
   
-  // Estados para el formulario
   const [nuevaHab, setNuevaHab] = useState('');
   const [searchHab, setSearchHab] = useState('');
 
-  // Estados para los Modales
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editHabText, setEditHabText] = useState('');
   const [editIndex, setEditIndex] = useState<number | null>(null);
-  const [editId, setEditId] = useState<string | null>(null); // Necesitamos el ID de la BD
+  const [editId, setEditId] = useState<string | null>(null); 
 
   const [qrVisible, setQrVisible] = useState<string | null>(null);
   const viewShotRef = useRef<any>(null);
 
-  // --- 1. LEER DATOS AL INICIAR ---
   useEffect(() => {
     cargarHabitaciones();
   }, []);
 
+  // --- 1. LEER DATOS FILTRADOS POR HOTEL ---
   const cargarHabitaciones = async () => {
     setCargando(true);
+    const idHotel = await obtenerIdHotel(); // <-- Obtenemos el ID del hotel
+
+    if (!idHotel) {
+      setCargando(false);
+      return;
+    }
+
     const { data, error } = await supabase
       .from('habitaciones')
       .select('*')
+      .eq('id_hotel', idHotel) // <-- FILTRAMOS POR HOTEL
       .order('numero_habitacion', { ascending: true });
 
     if (error) {
@@ -48,28 +53,31 @@ export default function GestionHabitaciones() {
     setCargando(false);
   };
 
-  // --- 2. CREAR HABITACIÓN ---
+  // --- 2. CREAR HABITACIÓN CON ID HOTEL ---
   const agregarHabitacion = async () => {
     if (!nuevaHab.trim()) return;
     
-    // Validar que no exista localmente (o podrías dejar que la BD lo valide con el UNIQUE)
     if (habitaciones.find(h => h.numero_habitacion === nuevaHab.trim())) {
       Alert.alert("Error", "Esta habitación ya existe.");
       return;
     }
 
-    // Generamos un QR único automáticamente
     const nuevoQr = `QR-HAB-${nuevaHab.trim()}`;
+    const idHotel = await obtenerIdHotel(); // <-- Obtenemos el ID
 
     const { error } = await supabase
       .from('habitaciones')
-      .insert([{ numero_habitacion: nuevaHab.trim(), qr_uid: nuevoQr }]);
+      .insert([{ 
+        numero_habitacion: nuevaHab.trim(), 
+        qr_uid: nuevoQr,
+        id_hotel: idHotel // <-- LO GUARDAMOS EN EL INSERT
+      }]);
 
     if (error) {
       Alert.alert("Error al guardar", error.message);
     } else {
       setNuevaHab('');
-      cargarHabitaciones(); // Recargamos la lista
+      cargarHabitaciones(); 
     }
   };
 
@@ -100,7 +108,6 @@ export default function GestionHabitaciones() {
   const guardarEdicion = async () => {
     if (!editHabText.trim() || !editId) return;
     
-    // Al cambiar el número, también actualizamos su QR
     const nuevoQr = `QR-HAB-${editHabText.trim()}`;
 
     const { error } = await supabase
@@ -136,11 +143,11 @@ export default function GestionHabitaciones() {
     h.numero_habitacion.toLowerCase().includes(searchHab.toLowerCase())
   );
 
-  // Mostrar pantalla de carga
   if (cargando) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <Text style={{ fontSize: 18, color: '#1565C0' }}>Cargando habitaciones desde la nube...</Text>
+        <ActivityIndicator size="large" color="#1565C0" />
+        <Text style={{ marginTop: 10, color: '#666' }}>Cargando habitaciones...</Text>
       </View>
     );
   }
@@ -148,7 +155,6 @@ export default function GestionHabitaciones() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       
-      {/* MODAL EDITAR */}
       <Modal visible={editModalVisible} transparent={true} animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
@@ -162,7 +168,6 @@ export default function GestionHabitaciones() {
         </View>
       </Modal>
 
-      {/* MODAL VER QR */}
       <Modal visible={qrVisible !== null} transparent={true} animationType="slide">
         <View style={styles.qrModalOverlay}>
           <View style={styles.qrModalContainer}>
@@ -193,12 +198,12 @@ export default function GestionHabitaciones() {
       </TouchableOpacity>
 
       <Text style={styles.titulo}>Habitaciones y QR</Text>
-      <Text style={styles.subtitulo}>Administra las habitaciones del hotel conectadas a la nube.</Text>
+      <Text style={styles.subtitulo}>Administra las habitaciones de tu hotel.</Text>
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>🚪 Nueva Habitación</Text>
         <View style={styles.inputRow}>
-          <TextInput style={styles.input} placeholder="Ej: 501" value={nuevaHab} onChangeText={setNuevaHab} keyboardType="numeric" />
+          <TextInput style={styles.input} placeholder="Ej: 501" placeholderTextColor="#999" value={nuevaHab} onChangeText={setNuevaHab} keyboardType="numeric" />
           <TouchableOpacity style={styles.addButton} onPress={agregarHabitacion}>
             <Text style={styles.addButtonText}>+</Text>
           </TouchableOpacity>
@@ -209,11 +214,11 @@ export default function GestionHabitaciones() {
       
       <View style={styles.searchContainer}>
         <Text style={styles.searchIcon}>🔍</Text>
-        <TextInput style={styles.searchInput} placeholder="Buscar habitación..." value={searchHab} onChangeText={setSearchHab} />
+        <TextInput style={styles.searchInput} placeholder="Buscar habitación..." placeholderTextColor="#999" value={searchHab} onChangeText={setSearchHab} />
       </View>
 
       {habitacionesFiltradas.length === 0 ? (
-        <Text style={styles.emptyText}>No hay habitaciones registradas.</Text>
+        <Text style={styles.emptyText}>No hay habitaciones registradas para este hotel.</Text>
       ) : (
         habitacionesFiltradas.map((hab, index) => (
           <View key={hab.id} style={styles.habItem}>
@@ -240,7 +245,6 @@ export default function GestionHabitaciones() {
 }
 
 const styles = StyleSheet.create({
-  // ... (Mantén exactamente los mismos estilos que ya tenías en la pantalla)
   container: { flex: 1, backgroundColor: '#F0F4F8' },
   content: { padding: 20, paddingTop: 40, paddingBottom: 40 },
   backButton: { marginBottom: 15 },

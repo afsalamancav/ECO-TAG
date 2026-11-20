@@ -1,7 +1,8 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { useRouter } from 'expo-router';
-import { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../../conexion/supabase';
+import { obtenerIdHotel, cerrarSesion } from '../../conexion/sesion'; 
 
 export default function AdminDashboard() {
   const router = useRouter();
@@ -16,6 +17,12 @@ export default function AdminDashboard() {
   });
   const [alertasActivas, setAlertasActivas] = useState<any>({});
   const [cargando, setCargando] = useState(true);
+  
+  // Estados para la info del hotel y membresía
+  const [nombreHotel, setNombreHotel] = useState('');
+  const [usuarioEmail, setUsuarioEmail] = useState('');
+  const [fechaInicio, setFechaInicio] = useState('');
+  const [fechaVencimiento, setFechaVencimiento] = useState('');
 
   const [horaActual, setHoraActual] = useState(new Date());
   useEffect(() => {
@@ -28,24 +35,64 @@ export default function AdminDashboard() {
   if (hora < 12) saludo = 'Buenos días';
   else if (hora < 18) saludo = 'Buenas tardes';
 
-  useEffect(() => {
-    cargarEstadisticas();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      verificarSesionYCargar();
+    }, [])
+  );
 
-  const cargarEstadisticas = async () => {
+  const verificarSesionYCargar = async () => {
     setCargando(true);
 
-    const { count: countHabs } = await supabase.from('habitaciones').select('*', { count: 'exact', head: true });
-    const { count: countPrendas } = await supabase.from('articulos').select('*', { count: 'exact', head: true });
-    const { count: countAlmacen } = await supabase.from('articulos').select('*', { count: 'exact', head: true }).eq('estado', 'Disponible');
+    // 1. Verificamos la sesión del Admin
+    const { data: { session } } = await supabase.auth.getSession();
     
-    // CAMBIO CLAVE: Sumamos las que están en tránsito y en lavandería
-    const { count: countLavanderia } = await supabase.from('articulos').select('*', { count: 'exact', head: true }).in('estado', ['Lavandería', 'En Tránsito']);
-    
-    const { count: countAsignadas } = await supabase.from('articulos').select('*', { count: 'exact', head: true }).eq('estado', 'Asignada');
-    const { count: countPerdidas } = await supabase.from('articulos').select('*', { count: 'exact', head: true }).eq('estado', 'Perdida');
+    if (!session) {
+      Alert.alert("Acceso Denegado", "Debes iniciar sesión como administrador.");
+      router.replace('/auth/login-admin');
+      return;
+    }
 
-    const { data: configAlertas } = await supabase.from('configuracion_alertas').select('*');
+    setUsuarioEmail(session.user.email || '');
+
+    // 2. Obtenemos el ID del hotel
+    const idHotel = await obtenerIdHotel();
+
+    if (!idHotel) {
+      setCargando(false);
+      return;
+    }
+
+    // 3. Consultamos los datos del hotel (Nombre y Fechas de Membresía)
+    const { data: hotel, error: hotelError } = await supabase
+      .from('hoteles')
+      .select('nombre, created_at, fecha_vencimiento')
+      .eq('id', idHotel)
+      .single();
+
+    if (hotelError || !hotel) {
+      setCargando(false);
+      return;
+    }
+
+    setNombreHotel(hotel.nombre);
+    
+    // Formateamos las fechas para que se vean bonitas
+    const inicio = new Date(hotel.created_at).toLocaleDateString('es-CO');
+    const vencimiento = new Date(hotel.fecha_vencimiento).toLocaleDateString('es-CO');
+    setFechaInicio(inicio);
+    setFechaVencimiento(vencimiento);
+
+    // 4. Cargamos las estadísticas de las prendas
+    const { count: countHabs } = await supabase.from('habitaciones').select('*', { count: 'exact', head: true }).eq('id_hotel', idHotel);
+    const { count: countPrendas } = await supabase.from('articulos').select('*', { count: 'exact', head: true }).eq('id_hotel', idHotel);
+    const { count: countAlmacen } = await supabase.from('articulos').select('*', { count: 'exact', head: true }).eq('estado', 'Disponible').eq('id_hotel', idHotel);
+    const { count: countLavanderia } = await supabase.from('articulos').select('*', { count: 'exact', head: true }).in('estado', ['Lavandería', 'En Tránsito']).eq('id_hotel', idHotel);
+    const { count: countAsignadas } = await supabase.from('articulos').select('*', { count: 'exact', head: true }).eq('estado', 'Asignada').eq('id_hotel', idHotel);
+    const { count: countPerdidas } = await supabase.from('articulos').select('*', { count: 'exact', head: true }).eq('estado', 'Perdida').eq('id_hotel', idHotel);
+
+    // 5. Cargamos las alertas
+    const { data: configAlertas } = await supabase.from('configuracion_alertas').select('*').eq('id_hotel', idHotel);
     const alertasMap: any = {};
     if (configAlertas) {
       configAlertas.forEach(a => { alertasMap[a.id] = a.activa; });
@@ -64,24 +111,52 @@ export default function AdminDashboard() {
     setCargando(false);
   };
 
+  const handleLogout = async () => {
+    Alert.alert("Cerrar Sesión", "¿Estás seguro de que quieres salir?", [
+      { text: "Cancelar", style: "cancel" },
+      { text: "Salir", style: "destructive", onPress: async () => {
+        await supabase.auth.signOut(); 
+        await cerrarSesion(); 
+        router.replace('/'); 
+      }}
+    ]);
+  };
+
   if (cargando) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
         <ActivityIndicator size="large" color="#1B4D21" />
+        <Text style={{ marginTop: 10, color: '#666' }}>Verificando credenciales...</Text>
       </View>
     );
   }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      
+      {/* CABECERA CON INFO DEL HOTEL Y MEMBRESÍA */}
       <View style={styles.header}>
-        <View>
+        <View style={styles.headerLeft}>
           <Text style={styles.saludo}>{saludo},</Text>
           <Text style={styles.titulo}>Administrador</Text>
+          
+          <View style={styles.hotelInfoBox}>
+            <Text style={styles.nombreHotel}>{nombreHotel}</Text>
+            <Text style={styles.emailText}>👤 {usuarioEmail}</Text>
+            
+            {/* RECUADRO DE MEMBRESÍA */}
+            <View style={styles.membresiaBox}>
+              <Text style={styles.membresiaStatus}>MEMBRESÍA ACTIVA</Text>
+              <Text style={styles.membresiaFechas}>
+                Inicio: {fechaInicio}  |  Vence: {fechaVencimiento}
+              </Text>
+            </View>
+          </View>
         </View>
+        
         <View style={styles.relojContainer}>
           <Text style={styles.hora}>{horaActual.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}</Text>
-          <TouchableOpacity onPress={() => router.push('/')} style={styles.exitButton}>
+          <TouchableOpacity onPress={handleLogout} style={styles.exitButton}>
             <Text style={styles.exitText}>Salir</Text>
           </TouchableOpacity>
         </View>
@@ -183,24 +258,39 @@ export default function AdminDashboard() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F4F7F4' },
   content: { padding: 20, paddingTop: 50, paddingBottom: 40 },
+  
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 25 },
+  headerLeft: { flex: 1, paddingRight: 10 },
   saludo: { fontSize: 16, color: '#666' },
-  titulo: { fontSize: 28, fontWeight: '900', color: '#1B4D21' },
+  titulo: { fontSize: 28, fontWeight: '900', color: '#1B4D21', marginBottom: 10 },
+  
+  // Estilos de la info del hotel y membresía
+  hotelInfoBox: { backgroundColor: '#FFF', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#E0E0E0' },
+  nombreHotel: { fontSize: 16, fontWeight: 'bold', color: '#1B4D21' },
+  emailText: { fontSize: 12, color: '#666', marginTop: 2, marginBottom: 8 },
+  membresiaBox: { backgroundColor: '#E8F5E9', padding: 8, borderRadius: 8 },
+  membresiaStatus: { fontSize: 10, fontWeight: 'bold', color: '#2E7D32', letterSpacing: 0.5 },
+  membresiaFechas: { fontSize: 11, color: '#333', marginTop: 2, fontWeight: '500' },
+
   relojContainer: { alignItems: 'flex-end' },
   hora: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 5 },
   exitButton: { backgroundColor: '#FFEBEE', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
   exitText: { color: '#D32F2F', fontWeight: 'bold', fontSize: 12 },
+  
   sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 15, marginTop: 10 },
+  
   habitacionesCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1B4D21', padding: 20, borderRadius: 16, marginBottom: 25, elevation: 4 },
   habIcon: { fontSize: 40, marginRight: 15 },
   habInfo: { flex: 1 },
   habValue: { fontSize: 32, fontWeight: 'bold', color: '#FFF' },
   habLabel: { fontSize: 14, color: '#A5D6A7' },
   arrow: { fontSize: 30, color: '#FFF', opacity: 0.5 },
+  
   inventoryGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 25 },
   invCard: { width: '48%', backgroundColor: '#FFF', padding: 15, borderRadius: 12, marginBottom: 10, borderLeftWidth: 5, elevation: 2 },
   invValue: { fontSize: 28, fontWeight: 'bold', color: '#333' },
   invLabel: { fontSize: 12, color: '#666', marginTop: 5, fontWeight: 'bold' },
+  
   menuContainer: { marginBottom: 25 },
   menuItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', padding: 15, borderRadius: 16, marginBottom: 12, elevation: 2 },
   iconWrapper: { width: 50, height: 50, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
@@ -209,6 +299,7 @@ const styles = StyleSheet.create({
   menuTitle: { fontSize: 16, fontWeight: 'bold', color: '#333' },
   menuSub: { fontSize: 12, color: '#888', marginTop: 3 },
   menuArrow: { fontSize: 24, color: '#CCC', fontWeight: 'bold' },
+  
   alertsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15, marginTop: 5 },
   linkText: { color: '#1565C0', fontWeight: 'bold', fontSize: 14 },
   alertCard: { backgroundColor: '#FFF', padding: 18, borderRadius: 16, marginBottom: 15, borderLeftWidth: 4, elevation: 2 },

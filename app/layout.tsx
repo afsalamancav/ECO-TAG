@@ -4,6 +4,8 @@ export default function RootLayout() {
   return (
     <Stack screenOptions={{ headerShown: false }}> 
       <Stack.Screen name="index" />
+
+      <Stack.Screen name="auth/bloqueado" options={{ title: 'Membresía Vencida' }} />
       
       {/* RUTAS DEL ADMINISTRADOR */}
       <Stack.Screen name="administrador/dashboard" options={{ title: 'Panel Admin' }} />
@@ -20,6 +22,7 @@ export default function RootLayout() {
       {/* RUTAS DE HOTEL Y LAVANDERÍA */}
       <Stack.Screen name="hotel/index" options={{ title: 'Personal Hotel' }} />
       <Stack.Screen name="lavanderia/index" options={{ title: 'Lavandería' }} />
+      
     </Stack>
   );
 }
