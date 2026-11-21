@@ -63,7 +63,7 @@ export default function AdminDashboard() {
       return;
     }
 
-    // 3. Consultamos los datos del hotel (Nombre y Fechas de Membresía)
+   // 3. Consultamos los datos del hotel (Nombre y Fechas de Membresía)
     const { data: hotel, error: hotelError } = await supabase
       .from('hoteles')
       .select('nombre, created_at, fecha_vencimiento')
@@ -74,6 +74,28 @@ export default function AdminDashboard() {
       setCargando(false);
       return;
     }
+
+    // --- NUEVA VALIDACIÓN DE MEMBRESÍA ---
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0); // Normalizamos a inicio del día actual
+
+    // Si fecha_vencimiento viene como "YYYY-MM-DD" o timestamp ISO
+    const fechaVenc = new Date(hotel.fecha_vencimiento);
+    // Ajuste para evitar desfase de zona horaria si viene solo YYYY-MM-DD
+    if (typeof hotel.fecha_vencimiento === 'string' && hotel.fecha_vencimiento.length === 10) {
+      const [year, month, day] = hotel.fecha_vencimiento.split('-').map(Number);
+      fechaVenc.setFullYear(year, month - 1, day);
+    }
+    fechaVenc.setHours(23, 59, 59, 999); // Vence al final del día indicado
+
+    if (hoy > fechaVenc) {
+      await supabase.auth.signOut();
+      await cerrarSesion();
+      setCargando(false);
+      router.replace('/auth/bloqueado');
+      return;
+    }
+    // -------------------------------------
 
     setNombreHotel(hotel.nombre);
     

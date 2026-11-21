@@ -2,7 +2,7 @@ import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert,
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../../conexion/supabase';
-import { obtenerIdHotel } from '../../conexion/sesion'; // IMPORTANTE
+import { obtenerIdHotel } from '../../conexion/sesion'; 
 import NfcManager, { NfcTech } from 'react-native-nfc-manager';
 
 export default function Registro() {
@@ -30,10 +30,10 @@ export default function Registro() {
   const [searchQuery, setSearchQuery] = useState('');
   const [modalDeleteVisible, setModalDeleteVisible] = useState(false);
 
-  // NFC
+  // Escaneo NFC
   const [isScanning, setIsScanning] = useState(false);
+  const [escaneandoParaBaja, setEscaneandoParaBaja] = useState(false);
 
-  // Se ejecuta cada vez que entras a la pantalla
   useFocusEffect(
     useCallback(() => {
       cargarCatalogos();
@@ -41,19 +41,15 @@ export default function Registro() {
     }, [])
   );
 
-  // --- 1. CARGAR CATÁLOGOS DEL HOTEL ---
   const cargarCatalogos = async () => {
     const idHotel = await obtenerIdHotel();
     if (!idHotel) return;
-
     const { data: dataTipos } = await supabase.from('tipos_prenda').select('*').eq('id_hotel', idHotel).order('nombre');
     const { data: dataComps } = await supabase.from('tipos_tela').select('*').eq('id_hotel', idHotel).order('nombre');
-
     if (dataTipos) setTiposPrenda(dataTipos);
     if (dataComps) setComposiciones(dataComps);
   };
 
-  // --- 2. CARGAR PRENDAS REGISTRADAS ---
   const cargarPrendas = async () => {
     setCargando(true);
     const idHotel = await obtenerIdHotel();
@@ -63,29 +59,47 @@ export default function Registro() {
       .from('articulos')
       .select('*')
       .eq('estado', 'Disponible')
-      .eq('id_hotel', idHotel) // Filtro por hotel
+      .eq('id_hotel', idHotel)
       .order('created_at', { ascending: false });
 
     setPrendas(data || []);
     setCargando(false);
   };
 
-  // --- 3. ESCANEAR NFC ---
-  const escanearNFC = async () => {
+  const escanearNFC = async (paraBaja: boolean = false) => {
+    setEscaneandoParaBaja(paraBaja);
     setIsScanning(true);
+    
     try {
       await NfcManager.requestTechnology(NfcTech.Ndef);
       const tag = await NfcManager.getTag();
       
       if (tag && tag.id) {
         const idEscaneado = tag.id.toUpperCase();
-        // Verificamos si ya existe en este hotel
-        const existe = prendas.find(p => p.nfc_uid === idEscaneado);
-        if (existe) {
-          Alert.alert("Error", "Este código NFC ya está registrado.");
+        
+        if (paraBaja) {
+          const existe = prendas.find(p => p.nfc_uid === idEscaneado);
+          if (existe) {
+            setPrendaAEliminar(existe);
+            setModalDeleteVisible(true);
+          } else {
+            Alert.alert("No encontrada", "Este chip no está registrado como 'Disponible' en tu hotel.");
+          }
         } else {
-          setCodigoNFC(idEscaneado);
-          Alert.alert("✅ NFC Leído", `Código capturado: ${idEscaneado}`);
+          // Verificamos si el NFC ya existe en la base de datos
+          const idHotel = await obtenerIdHotel();
+          const { data } = await supabase
+            .from('articulos')
+            .select('id')
+            .eq('nfc_uid', idEscaneado)
+            .eq('id_hotel', idHotel);
+            
+          if (data && data.length > 0) {
+            Alert.alert("Error", "Este código NFC ya está registrado en el sistema.");
+          } else {
+            setCodigoNFC(idEscaneado);
+            Alert.alert("✅ NFC Leído", `Código capturado: ${idEscaneado}`);
+          }
         }
       }
     } catch (ex) {
@@ -93,10 +107,10 @@ export default function Registro() {
     } finally {
       NfcManager.cancelTechnologyRequest().catch(() => 0);
       setIsScanning(false);
+      setEscaneandoParaBaja(false);
     }
   };
 
-  // --- 4. GUARDAR PRENDA ---
   const guardarPrenda = async () => {
     if (!tipo || !composicion || !codigoNFC) {
       Alert.alert("Error", "Por favor completa todos los campos obligatorios.");
@@ -106,7 +120,18 @@ export default function Registro() {
     const idHotel = await obtenerIdHotel();
     const compSeleccionada = composiciones.find(c => c.nombre === composicion);
 
-    // Insertamos el artículo
+    // Verificación final para evitar duplicados
+    const { data: existe } = await supabase
+      .from('articulos')
+      .select('id')
+      .eq('nfc_uid', codigoNFC.toUpperCase())
+      .eq('id_hotel', idHotel);
+
+    if (existe && existe.length > 0) {
+      Alert.alert("Error", "Ese código NFC ya está en uso. No se puede registrar.");
+      return;
+    }
+
     const { data: nuevaPrenda, error } = await supabase
       .from('articulos')
       .insert([{ 
@@ -116,7 +141,7 @@ export default function Registro() {
         estado: 'Disponible',
         lavados_totales: 0,
         vida_util_max: 200,
-        id_hotel: idHotel // <-- GUARDAMOS EL HOTEL
+        id_hotel: idHotel 
       }])
       .select()
       .single();
@@ -124,7 +149,6 @@ export default function Registro() {
     if (error) {
       Alert.alert("Error al guardar", error.message);
     } else {
-      // Guardamos el registro en el historial
       if (nuevaPrenda) {
         await supabase.from('historial').insert([{
           id_articulo: nuevaPrenda.id,
@@ -133,7 +157,6 @@ export default function Registro() {
           id_hotel: idHotel
         }]);
       }
-
       Alert.alert("¡Éxito!", `Prenda registrada:\n${tipo}`);
       setTipo(''); setComposicion(''); setCodigoNFC('');
       cargarPrendas();
@@ -141,28 +164,39 @@ export default function Registro() {
     }
   };
 
-  // --- 5. DAR DE BAJA ---
+    // --- DAR DE BAJA (DELETE REAL) ---
   const confirmarBaja = async () => {
     if (!prendaAEliminar) return;
-    const idHotel = await obtenerIdHotel();
 
-    // En lugar de borrar, actualizamos el estado a "Perdida" para no perder el historial
-    const { error } = await supabase
-      .from('articulos')
-      .update({ estado: 'Perdida' })
-      .eq('id', prendaAEliminar.id);
+    try {
+      // 1. Primero eliminamos el historial asociado a esta prenda
+      const { error: errorHistorial } = await supabase
+        .from('historial')
+        .delete()
+        .eq('id_articulo', prendaAEliminar.id);
 
-    if (error) Alert.alert("Error", error.message);
-    else {
-      await supabase.from('historial').insert([{
-        id_articulo: prendaAEliminar.id,
-        evento: 'Baja de Prenda',
-        detalle: 'El administrador dio de baja la prenda.',
-        id_hotel: idHotel
-      }]);
-      Alert.alert("Prenda dada de baja", "La prenda se movió a 'Perdidas'.");
-      cargarPrendas();
+      if (errorHistorial) {
+        Alert.alert("Error al eliminar historial", errorHistorial.message);
+        return; // Detenemos la ejecución si falla el borrado del historial
+      }
+
+      // 2. Luego eliminamos la prenda de la tabla articulos
+      const { error: errorArticulo } = await supabase
+        .from('articulos')
+        .delete()
+        .eq('id', prendaAEliminar.id);
+
+      if (errorArticulo) {
+        Alert.alert("Error al eliminar prenda", errorArticulo.message);
+      } else {
+        Alert.alert("Prenda Eliminada", "El textil y su historial han sido borrados permanentemente de la base de datos. El chip NFC ahora está libre.");
+        cargarPrendas(); // Recargamos la lista para que desaparezca de la vista
+      }
+    } catch (error: any) {
+      Alert.alert("Error inesperado", error.message);
     }
+    
+    // Cerramos el modal y limpiamos el estado
     setModalDeleteVisible(false);
     setPrendaAEliminar(null);
   };
@@ -215,7 +249,9 @@ export default function Registro() {
         <View style={styles.modalOverlayCenter}>
           <View style={styles.scanningBox}>
             <ActivityIndicator size="large" color="#1B4D21" />
-            <Text style={styles.scanningTitle}>Escaneando Chip NFC...</Text>
+            <Text style={styles.scanningTitle}>
+              {escaneandoParaBaja ? 'Escaneando para Dar de Baja...' : 'Escaneando Chip NFC...'}
+            </Text>
             <Text style={styles.scanningText}>Acerca el chip a la parte trasera del celular.</Text>
             <TouchableOpacity style={styles.cancelScanBtn} onPress={() => { NfcManager.cancelTechnologyRequest(); setIsScanning(false); }}>
               <Text style={styles.cancelScanText}>Cancelar</Text>
@@ -228,11 +264,11 @@ export default function Registro() {
       <Modal visible={modalDeleteVisible} transparent={true} animationType="fade">
         <View style={styles.modalOverlayCenter}>
           <View style={styles.guideModalBox}>
-            <Text style={styles.guideTitle}>¿Dar de baja?</Text>
-            <Text style={styles.guideText}>La prenda {prendaAEliminar?.tipo_prenda} pasará a la lista de "Perdidas" para mantener su historial.</Text>
+            <Text style={styles.guideTitle}>¿Eliminar prenda?</Text>
+            <Text style={styles.guideText}>La prenda <Text style={{fontWeight:'bold'}}>{prendaAEliminar?.tipo_prenda} ({prendaAEliminar?.nfc_uid})</Text> será borrada de la base de datos permanentemente.</Text>
             <View style={styles.guideButtonsRow}>
               <TouchableOpacity style={styles.guideCancelBtn} onPress={() => setModalDeleteVisible(false)}><Text style={styles.guideCancelText}>Cancelar</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.guideActionBtn} onPress={confirmarBaja}><Text style={styles.guideActionText}>Sí, dar de baja</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.guideActionBtn} onPress={confirmarBaja}><Text style={styles.guideActionText}>Sí, eliminar</Text></TouchableOpacity>
             </View>
           </View>
         </View>
@@ -280,7 +316,7 @@ export default function Registro() {
             <Text style={styles.label}>Código NFC Único *</Text>
             <View style={styles.nfcRow}>
               <TextInput style={[styles.input, { flex: 1, marginBottom: 0, backgroundColor: '#EEE' }]} placeholder="Escanea para obtener el ID" placeholderTextColor="#999" value={codigoNFC} editable={false} />
-              <TouchableOpacity style={styles.nfcButton} onPress={escanearNFC}>
+              <TouchableOpacity style={styles.nfcButton} onPress={() => escanearNFC(false)}>
                 <Text style={styles.nfcButtonText}>📡 Escanear</Text>
               </TouchableOpacity>
             </View>
@@ -294,9 +330,13 @@ export default function Registro() {
 
       {activeTab === 'gestionar' && (
         <View>
+          <TouchableOpacity style={styles.btnScanBaja} onPress={() => escanearNFC(true)}>
+            <Text style={styles.btnScanBajaText}>📡 Escanear NFC para Dar de Baja</Text>
+          </TouchableOpacity>
+
           <View style={styles.searchContainer}>
             <Text style={styles.searchIcon}>🔍</Text>
-            <TextInput style={styles.searchInput} placeholder="Buscar por NFC o tipo..." placeholderTextColor="#999" value={searchPrenda} onChangeText={setSearchPrenda} />
+            <TextInput style={styles.searchInput} placeholder="O busca por NFC o tipo..." placeholderTextColor="#999" value={searchPrenda} onChangeText={setSearchPrenda} />
           </View>
 
           <Text style={styles.infoText}>Mostrando prendas Disponibles en el inventario ({prendasFiltradas.length}).</Text>
@@ -364,6 +404,10 @@ const styles = StyleSheet.create({
   searchIcon: { fontSize: 18, marginRight: 10 },
   searchInput: { flex: 1, paddingVertical: 12, fontSize: 16, color: '#333' },
   infoText: { fontSize: 12, color: '#666', marginBottom: 15, fontStyle: 'italic' },
+  
+  btnScanBaja: { backgroundColor: '#FFEBEE', borderWidth: 1, borderColor: '#FFCDD2', padding: 18, borderRadius: 12, alignItems: 'center', marginBottom: 15 },
+  btnScanBajaText: { color: '#D32F2F', fontWeight: 'bold', fontSize: 16 },
+
   prendaCard: { backgroundColor: '#FFF', padding: 15, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E0E0E0' },
   prendaHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   prendaId: { fontSize: 12, fontWeight: 'bold', color: '#888' },
